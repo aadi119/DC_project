@@ -3,169 +3,242 @@ import java.time.format.DateTimeFormatter;
 
 public class RailwayStation {
 
-    private String stationName;
-    private String masterJunction;
+    private final String stationName;
+    private final String masterNode;
 
-    // Formatter for timestamps including milliseconds
-    private static final DateTimeFormatter TIME_FORMAT =
+    // Lamport Logical Clock
+    private int lamportClock = 0;
+
+    // Used to make updates to Lamport clock thread-safe
+    private final Object clockLock = new Object();
+
+    private final DateTimeFormatter timeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
-    // Constructor
-    public RailwayStation(String stationName, String masterJunction) {
+    public RailwayStation(String stationName, String masterNode) {
         this.stationName = stationName;
-        this.masterJunction = masterJunction;
+        this.masterNode = masterNode;
     }
 
-    // Method to generate current timestamp
-    private String getTimestamp() {
-        return LocalTime.now().format(TIME_FORMAT);
+    // ---------------------------------------------------------
+    // LAMPORT CLOCK METHODS
+    // ---------------------------------------------------------
+
+    // Increment clock for a local event
+    private int incrementLamportClock() {
+        synchronized (clockLock) {
+            lamportClock++;
+            return lamportClock;
+        }
     }
 
-    // Thread 1: Signal Processing
-    public void processSignalUpdates() {
+    // Update clock when receiving a message from another node
+    public int receiveLamportTimestamp(int receivedTimestamp) {
+        synchronized (clockLock) {
+            lamportClock =
+                    Math.max(lamportClock, receivedTimestamp) + 1;
 
-        Thread signalThread = new Thread(() -> {
+            return lamportClock;
+        }
+    }
 
-            String[] signals = {
-                "RED",
-                "GREEN",
-                "YELLOW",
-                "RED",
-                "GREEN"
-            };
+    // Get current Lamport clock value
+    public int getLamportClock() {
+        synchronized (clockLock) {
+            return lamportClock;
+        }
+    }
 
-            for (String signal : signals) {
+    // ---------------------------------------------------------
+    // OUTPUT METHOD
+    // ---------------------------------------------------------
 
-                System.out.println(
-                    "[" + getTimestamp() + "] "
-                    + "[" + Thread.currentThread().getName() + "] "
-                    + "Signal at " + stationName
-                    + " changed to " + signal
-                );
+    private void printEvent(String threadName,
+                            int logicalTimestamp,
+                            String message) {
 
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+        String physicalTime =
+                LocalTime.now().format(timeFormatter);
 
-                    System.out.println(
-                        "[" + getTimestamp() + "] "
-                        + "[Signal-Thread] "
-                        + "Signal processing interrupted."
-                    );
+        System.out.println(
+                "[" + physicalTime + "] "
+                + "[" + threadName + "] "
+                + "[Lamport=" + logicalTimestamp + "] "
+                + message
+        );
+    }
 
-                    return;
-                }
+    // ---------------------------------------------------------
+    // SIGNAL THREAD
+    // ---------------------------------------------------------
+
+    private void signalOperations() {
+
+        String threadName = Thread.currentThread().getName();
+
+        String[] signals = {
+                "RED -> GREEN",
+                "GREEN -> YELLOW",
+                "YELLOW -> RED",
+                "RED -> GREEN"
+        };
+
+        for (String signal : signals) {
+
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
 
-            System.out.println(
-                "[" + getTimestamp() + "] "
-                + "[Signal-Thread] "
-                + "Signal processing completed."
+            int timestamp = incrementLamportClock();
+
+            printEvent(
+                    threadName,
+                    timestamp,
+                    "Signal changed: " + signal
             );
+        }
 
-        }, "Signal-Thread");
-
-        signalThread.start();
+        printEvent(
+                threadName,
+                getLamportClock(),
+                "Signal Thread completed."
+        );
     }
 
-    // Thread 2: Heartbeat Monitoring
-    public void monitorMasterHeartbeat() {
+    // ---------------------------------------------------------
+    // HEARTBEAT THREAD
+    // ---------------------------------------------------------
 
-        Thread heartbeatThread = new Thread(() -> {
+    private void heartbeatOperations() {
 
-            for (int i = 1; i <= 7; i++) {
+        String threadName = Thread.currentThread().getName();
 
-                System.out.println(
-                    "[" + getTimestamp() + "] "
-                    + "[" + Thread.currentThread().getName() + "] "
-                    + "Heartbeat check " + i
-                    + " -> Master " + masterJunction
+        for (int i = 1; i <= 5; i++) {
+
+            try {
+                Thread.sleep(700);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
+            int timestamp = incrementLamportClock();
+
+            printEvent(
+                    threadName,
+                    timestamp,
+                    "Heartbeat -> "
+                    + masterNode
                     + " : ALIVE"
-                );
-
-                try {
-                    Thread.sleep(700);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-
-                    System.out.println(
-                        "[" + getTimestamp() + "] "
-                        + "[Heartbeat-Thread] "
-                        + "Heartbeat monitoring interrupted."
-                    );
-
-                    return;
-                }
-            }
-
-            System.out.println(
-                "[" + getTimestamp() + "] "
-                + "[Heartbeat-Thread] "
-                + "Heartbeat monitoring completed."
             );
+        }
 
-        }, "Heartbeat-Thread");
-
-        heartbeatThread.start();
+        printEvent(
+                threadName,
+                getLamportClock(),
+                "Heartbeat Thread completed."
+        );
     }
 
-    // Thread 3: Train Event Processing
-    public void processTrainEvents() {
+    // ---------------------------------------------------------
+    // TRAIN THREAD
+    // ---------------------------------------------------------
 
-        Thread trainThread = new Thread(() -> {
+    private void trainOperations() {
 
-            String[] trainEvents = {
+        String threadName = Thread.currentThread().getName();
+
+        String[] trainEvents = {
                 "Train 101 arriving at Platform 1",
+                "Train 101 stopped at Platform 1",
                 "Train 101 departed from Platform 1",
-                "Train 102 arriving at Platform 2",
-                "Train 102 departed from Platform 2",
-                "Train 103 arriving at Platform 1"
-            };
+                "Train 102 arriving at Platform 2"
+        };
 
-            for (String event : trainEvents) {
+        for (String event : trainEvents) {
 
-                System.out.println(
-                    "[" + getTimestamp() + "] "
-                    + "[" + Thread.currentThread().getName() + "] "
-                    + event
-                );
-
-                try {
-                    Thread.sleep(900);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-
-                    System.out.println(
-                        "[" + getTimestamp() + "] "
-                        + "[Train-Thread] "
-                        + "Train event processing interrupted."
-                    );
-
-                    return;
-                }
+            try {
+                Thread.sleep(900);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
 
-            System.out.println(
-                "[" + getTimestamp() + "] "
-                + "[Train-Thread] "
-                + "Train event processing completed."
+            int timestamp = incrementLamportClock();
+
+            printEvent(
+                    threadName,
+                    timestamp,
+                    event
             );
+        }
 
-        }, "Train-Thread");
-
-        trainThread.start();
+        printEvent(
+                threadName,
+                getLamportClock(),
+                "Train Thread completed."
+        );
     }
 
-    // Start all railway activities
+    // ---------------------------------------------------------
+    // START ALL THREADS
+    // ---------------------------------------------------------
+
     public void startStationOperations() {
 
+        System.out.println();
+        System.out.println("==========================================================");
+        System.out.println("       RAILWAY COORDINATION SYSTEM");
+        System.out.println("       EXPERIMENT 3 - LAMPORT LOGICAL CLOCK");
+        System.out.println("==========================================================");
+        System.out.println("Station Node : " + stationName);
+        System.out.println("Master Node  : " + masterNode);
+        System.out.println("Initial Lamport Clock : L = "
+                + getLamportClock());
         System.out.println();
         System.out.println("Starting railway station threads...");
         System.out.println();
 
-        processSignalUpdates();
-        monitorMasterHeartbeat();
-        processTrainEvents();
+        Thread signalThread =
+                new Thread(
+                        this::signalOperations,
+                        "Signal-Thread"
+                );
+
+        Thread heartbeatThread =
+                new Thread(
+                        this::heartbeatOperations,
+                        "Heartbeat-Thread"
+                );
+
+        Thread trainThread =
+                new Thread(
+                        this::trainOperations,
+                        "Train-Thread"
+                );
+
+        // Start all three threads
+        signalThread.start();
+        heartbeatThread.start();
+        trainThread.start();
+
+        // Wait for all threads to finish
+        try {
+            signalThread.join();
+            heartbeatThread.join();
+            trainThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        System.out.println();
+        System.out.println("==========================================================");
+        System.out.println("All railway threads completed.");
+        System.out.println("Final Lamport Clock : L = "
+                + getLamportClock());
+        System.out.println("==========================================================");
     }
 }
