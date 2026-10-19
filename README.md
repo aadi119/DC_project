@@ -2,6 +2,9 @@
 
 Four railway stations (STATION-01 … STATION-04) coordinating as a distributed system.
 
+> **Editing the project?** Read [PROJECT_GUIDE.md](PROJECT_GUIDE.md) first: architecture,
+> API reference, how the website is built, testing checklist and known gotchas.
+
 | Experiment | Topic | Where |
 |---|---|---|
 | 1 | Client-server / RPC (web dashboard calls stations through a JSON-RPC style API) | `RailwayWebServer`, `RailwaySystem` |
