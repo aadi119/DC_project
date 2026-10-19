@@ -285,7 +285,9 @@ public class ReplicationManager {
             crashBeforeNextReply = false;
             primary.failNode();
             throw new PrimaryUnavailableException(primary.getStationName()
-                    + " crashed after committing v" + commit.version()
+                    + (commit.accepted()
+                            ? " crashed after committing v" + commit.version()
+                            : " crashed after rejecting the request")
                     + ", reply lost");
         }
 

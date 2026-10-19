@@ -92,11 +92,50 @@ public final class RailwayEventAnalytics {
     }
 
     // =========================================================
+    // RESULT OF ONE MAPREDUCE RUN
+    // Everything is computed by Spark first; the console report and the
+    // web dashboard are both produced from this record.
+    // =========================================================
+
+    /** One input split: a station's log loaded as one Spark partition. */
+    public record PartitionInfo(int partition, String station, int events) {
+    }
+
+    /** One sample record passed through the map function (key null = nothing emitted). */
+    public record MapSample(String input, String key, Integer value) {
+    }
+
+    public record Result(String sparkVersion,
+                         List<PartitionInfo> partitions,
+                         long totalEvents,
+                         List<MapSample> mapSamples,
+                         long mapOutputPairs,
+                         Map<String, List<Integer>> grouped,
+                         Map<String, Integer> reduced,
+                         long reducedTotal,
+                         Map<String, Integer> occupations,
+                         Map<String, Integer> requestsFromLogs,
+                         Map<String, Integer> loadBalancerCounts,
+                         boolean matchesLoadBalancer,
+                         String busiestTrack) {
+    }
+
+    // =========================================================
     // JOB
     // =========================================================
 
+    private static SparkConf sparkConf() {
+        return new SparkConf()
+                .setAppName("RailwayEventAnalytics")
+                .setMaster("local[4]")
+                .set("spark.ui.enabled", "false")
+                .set("spark.driver.host", "localhost")
+                .set("spark.driver.bindAddress", "127.0.0.1");
+    }
+
     /**
-     * Runs the MapReduce analyses.
+     * Console version (Experiment 7 in Main): starts Spark, runs the
+     * MapReduce analyses and prints the full report.
      *
      * @param stationLogs        station name → its exported log file
      * @param loadBalancerCounts requests the load balancer assigned per
@@ -105,40 +144,145 @@ public final class RailwayEventAnalytics {
     public static void run(Map<String, Path> stationLogs,
                            Map<String, Integer> loadBalancerCounts) throws IOException {
 
-        SparkConf conf = new SparkConf()
-                .setAppName("RailwayEventAnalytics")
-                .setMaster("local[4]")
-                .set("spark.ui.enabled", "false")
-                .set("spark.driver.host", "localhost")
-                .set("spark.driver.bindAddress", "127.0.0.1");
-
         Terminal.blank();
         Terminal.line("Starting Apache Spark (local mode, 4 worker threads)...");
 
-        try (JavaSparkContext spark = new JavaSparkContext(conf)) {
+        try (JavaSparkContext spark = new JavaSparkContext(sparkConf())) {
 
             Terminal.line("✓ Spark " + spark.version() + " context started");
-
-            JavaRDD<String> events = loadStationLogs(spark, stationLogs);
-            events.cache();
-
-            printInputSplits(events, new ArrayList<>(stationLogs.keySet()));
-
-            Map<String, Integer> trackEvents = runTrackEventFrequency(events);
-            runTrackOccupationFrequency(events);
-            runRequestsPerStation(events, loadBalancerCounts);
-
-            Terminal.section("FINAL RAILWAY ANALYTICS");
-            trackEvents.forEach((track, count) ->
-                    Terminal.line("  " + track + " → " + count + " coordination events"));
-
-            String busiest = trackEvents.entrySet().stream()
-                    .max(Map.Entry.comparingByValue())
-                    .map(Map.Entry::getKey)
-                    .orElse("none");
-            Terminal.blank();
-            Terminal.line("Busiest track: " + busiest);
+            printReport(analyze(spark, stationLogs, loadBalancerCounts));
         }
+    }
+
+    // Web dashboard: one Spark context kept for the lifetime of the server
+    private static JavaSparkContext sharedContext;
+
+    /** Runs the analyses on a long-lived Spark context (started on first use). */
+    public static synchronized Result analyzeWithSharedContext(
+            Map<String, Path> stationLogs,
+            Map<String, Integer> loadBalancerCounts) throws IOException {
+
+        if (sharedContext == null) {
+            sharedContext = new JavaSparkContext(sparkConf());
+        }
+        return analyze(sharedContext, stationLogs, loadBalancerCounts);
+    }
+
+    /** Runs all three MapReduce analyses with Spark and returns the results. */
+    public static Result analyze(JavaSparkContext spark,
+                                 Map<String, Path> stationLogs,
+                                 Map<String, Integer> loadBalancerCounts) throws IOException {
+
+        JavaRDD<String> events = loadStationLogs(spark, stationLogs);
+        events.cache();
+
+        // ---------------- input splits ----------------
+        // Counted by Spark: one task per partition
+        List<Integer> recordsPerPartition = events.mapPartitions(lines -> {
+            int count = 0;
+            while (lines.hasNext()) {
+                lines.next();
+                count++;
+            }
+            return List.of(count).iterator();
+        }).collect();
+
+        List<String> stationNames = new ArrayList<>(stationLogs.keySet());
+        List<PartitionInfo> partitions = new ArrayList<>();
+        for (int i = 0; i < recordsPerPartition.size(); i++) {
+            partitions.add(new PartitionInfo(i, stationNames.get(i), recordsPerPartition.get(i)));
+        }
+        long totalEvents = events.count();
+
+        // ---------------- ANALYSIS 1: MAP ----------------
+        // Sample records fetched by Spark. Each is passed through the same
+        // map function Spark uses, to show exactly what it emits.
+        List<String> sampleLines = new ArrayList<>(events
+                .filter(line -> line.contains("|TRACK_EVENT|"))
+                .take(SAMPLE_TRACK_EVENTS));
+        sampleLines.addAll(events
+                .filter(line -> !line.contains("|TRACK_EVENT|"))
+                .take(1));
+
+        List<MapSample> mapSamples = new ArrayList<>();
+        for (String sample : sampleLines) {
+            Iterator<Tuple2<String, Integer>> emitted = mapTrackEvent(sample);
+            if (emitted.hasNext()) {
+                Tuple2<String, Integer> pair = emitted.next();
+                mapSamples.add(new MapSample(sample, pair._1(), pair._2()));
+            } else {
+                mapSamples.add(new MapSample(sample, null, null));
+            }
+        }
+
+        PairFlatMapFunction<String, String, Integer> trackMapper =
+                RailwayEventAnalytics::mapTrackEvent;
+        JavaPairRDD<String, Integer> mapped = events.flatMapToPair(trackMapper);
+        mapped.cache();
+        long mapOutputPairs = mapped.count();
+
+        // ---------------- ANALYSIS 1: SHUFFLE / GROUP ----------------
+        Map<String, List<Integer>> grouped = new LinkedHashMap<>();
+        for (Tuple2<String, Iterable<Integer>> group
+                : mapped.groupByKey().sortByKey().collect()) {
+            List<Integer> values = new ArrayList<>();
+            group._2().forEach(values::add);
+            grouped.put(group._1(), values);
+        }
+
+        // ---------------- ANALYSIS 1: REDUCE ----------------
+        Map<String, Integer> reduced = new LinkedHashMap<>();
+        long reducedTotal = 0;
+        for (Tuple2<String, Integer> entry
+                : mapped.reduceByKey(Integer::sum).sortByKey().collect()) {
+            reduced.put(entry._1(), entry._2());
+            reducedTotal += entry._2();
+        }
+
+        // ---------------- ANALYSIS 2: OCCUPATIONS ----------------
+        PairFlatMapFunction<String, String, Integer> occupationMapper =
+                RailwayEventAnalytics::mapTrackOccupation;
+        Map<String, Integer> occupations = new LinkedHashMap<>();
+        for (Tuple2<String, Integer> entry : events
+                .flatMapToPair(occupationMapper)
+                .reduceByKey(Integer::sum)
+                .sortByKey()
+                .collect()) {
+            occupations.put(entry._1(), entry._2());
+        }
+
+        // ---------------- ANALYSIS 3: REQUESTS PER STATION ----------------
+        // Cross-checks Experiment 6: counted from the logs, compared with
+        // the load balancer's own record.
+        PairFlatMapFunction<String, String, Integer> stationMapper =
+                RailwayEventAnalytics::mapTrainRequestByStation;
+        Map<String, Integer> fromLogs = new LinkedHashMap<>();
+        for (Tuple2<String, Integer> entry : events
+                .flatMapToPair(stationMapper)
+                .reduceByKey(Integer::sum)
+                .collect()) {
+            fromLogs.put(entry._1(), entry._2());
+        }
+
+        Map<String, Integer> requestsFromLogs = new LinkedHashMap<>();
+        boolean allMatch = true;
+        for (Map.Entry<String, Integer> expected : loadBalancerCounts.entrySet()) {
+            int counted = fromLogs.getOrDefault(expected.getKey(), 0);
+            requestsFromLogs.put(expected.getKey(), counted);
+            allMatch &= counted == expected.getValue();
+        }
+
+        String busiest = reduced.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .orElse("none");
+
+        events.unpersist();
+        mapped.unpersist();
+
+        return new Result(spark.version(), partitions, totalEvents, mapSamples,
+                mapOutputPairs, grouped, reduced, reducedTotal, occupations,
+                requestsFromLogs, new LinkedHashMap<>(loadBalancerCounts), allMatch, busiest);
     }
 
     /** One RDD partition per station log (the "input splits"). */
@@ -164,191 +308,92 @@ public final class RailwayEventAnalytics {
         return events;
     }
 
-    private static void printInputSplits(JavaRDD<String> events, List<String> stationNames) {
+    // =========================================================
+    // CONSOLE REPORT
+    // =========================================================
 
-        // Counted by Spark: one task per partition
-        List<Integer> recordsPerPartition = events.mapPartitions(lines -> {
-            int count = 0;
-            while (lines.hasNext()) {
-                lines.next();
-                count++;
-            }
-            return List.of(count).iterator();
-        }).collect();
+    private static void printReport(Result result) {
 
         Terminal.blank();
         Terminal.line("Input splits (one Spark partition per station log):");
-
-        for (int i = 0; i < recordsPerPartition.size(); i++) {
+        for (PartitionInfo split : result.partitions()) {
             Terminal.line(String.format("  Partition %d ← %s.log : %d events",
-                    i, stationNames.get(i), recordsPerPartition.get(i)));
+                    split.partition(), split.station(), split.events()));
         }
+        Terminal.line("Total Events: " + result.totalEvents());
 
-        Terminal.line("Total Events: " + events.count());
-    }
-
-    // =========================================================
-    // ANALYSIS 1 - TRACK EVENT FREQUENCY (full Map/Shuffle/Reduce view)
-    // =========================================================
-
-    private static Map<String, Integer> runTrackEventFrequency(JavaRDD<String> events) {
-
+        // ---------------- ANALYSIS 1 ----------------
         Terminal.banner(
                 "ANALYSIS 1 - TRACK EVENT FREQUENCY",
                 "Question: how many coordination events occurred on each track?"
         );
 
-        // -------------------- MAP --------------------
         Terminal.section("MAP PHASE");
         Terminal.line("map(event) → emit (KEY = trackId, VALUE = 1) for every TRACK_EVENT");
         Terminal.line("             emit nothing for any other event type");
         Terminal.blank();
 
-        // Sample records fetched by Spark. Each is passed through the same
-        // map function Spark uses, to show exactly what it emits.
-        List<String> samples = new ArrayList<>(events
-                .filter(line -> line.contains("|TRACK_EVENT|"))
-                .take(SAMPLE_TRACK_EVENTS));
-        samples.addAll(events
-                .filter(line -> !line.contains("|TRACK_EVENT|"))
-                .take(1));
-
-        for (String sample : samples) {
-
-            Terminal.line("Input Event: " + sample);
-
-            Iterator<Tuple2<String, Integer>> emitted = mapTrackEvent(sample);
-            if (emitted.hasNext()) {
-                Tuple2<String, Integer> pair = emitted.next();
-                Terminal.line("Mapped     : (KEY = " + pair._1()
-                        + ", VALUE = " + pair._2() + ")");
-            } else {
-                Terminal.line("Mapped     : (nothing emitted, not a TRACK_EVENT)");
-            }
+        for (MapSample sample : result.mapSamples()) {
+            Terminal.line("Input Event: " + sample.input());
+            Terminal.line(sample.key() != null
+                    ? "Mapped     : (KEY = " + sample.key() + ", VALUE = " + sample.value() + ")"
+                    : "Mapped     : (nothing emitted, not a TRACK_EVENT)");
             Terminal.blank();
         }
 
-        PairFlatMapFunction<String, String, Integer> mapper =
-                RailwayEventAnalytics::mapTrackEvent;
-        JavaPairRDD<String, Integer> mapped = events.flatMapToPair(mapper);
-        mapped.cache();
+        Terminal.line("Spark map output: " + result.mapOutputPairs()
+                + " (key, value) pairs from " + result.totalEvents() + " input events");
 
-        long mapOutputRecords = mapped.count();
-        Terminal.line("Spark map output: " + mapOutputRecords
-                + " (key, value) pairs from " + events.count() + " input events");
-
-        // ---------------- SHUFFLE / GROUP ----------------
         Terminal.section("SHUFFLE / GROUP PHASE");
         Terminal.line("Grouping values by Track ID (groupByKey)...");
         Terminal.blank();
+        result.grouped().forEach((track, values) -> Terminal.line("  " + track + " → " + values));
 
-        List<Tuple2<String, Iterable<Integer>>> grouped =
-                mapped.groupByKey().sortByKey().collect();
-
-        for (Tuple2<String, Iterable<Integer>> group : grouped) {
-            List<Integer> values = new ArrayList<>();
-            group._2().forEach(values::add);
-            Terminal.line("  " + group._1() + " → " + values);
-        }
-
-        // -------------------- REDUCE --------------------
         Terminal.section("REDUCE PHASE");
         Terminal.line("reduce(trackId, values) → sum of values (reduceByKey)");
         Terminal.blank();
-
-        List<Tuple2<String, Integer>> reduced =
-                mapped.reduceByKey(Integer::sum).sortByKey().collect();
-
-        Map<String, Integer> result = new LinkedHashMap<>();
-        long total = 0;
-
-        for (Tuple2<String, Integer> entry : reduced) {
-            Terminal.line("  " + entry._1() + " → " + entry._2());
-            result.put(entry._1(), entry._2());
-            total += entry._2();
-        }
+        result.reduced().forEach((track, count) -> Terminal.line("  " + track + " → " + count));
 
         Terminal.blank();
-        if (total == mapOutputRecords) {
-            Terminal.line("✓ Check: reduced total (" + total
-                    + ") = map output pairs (" + mapOutputRecords + ")");
+        if (result.reducedTotal() == result.mapOutputPairs()) {
+            Terminal.line("✓ Check: reduced total (" + result.reducedTotal()
+                    + ") = map output pairs (" + result.mapOutputPairs() + ")");
         } else {
-            Terminal.line("✗ Check failed: reduced total " + total
-                    + " ≠ map output " + mapOutputRecords);
+            Terminal.line("✗ Check failed: reduced total " + result.reducedTotal()
+                    + " ≠ map output " + result.mapOutputPairs());
         }
 
-        return result;
-    }
-
-    // =========================================================
-    // ANALYSIS 2 - TRACK OCCUPATION FREQUENCY
-    // =========================================================
-
-    private static void runTrackOccupationFrequency(JavaRDD<String> events) {
-
+        // ---------------- ANALYSIS 2 ----------------
         Terminal.banner(
                 "ANALYSIS 2 - TRACK OCCUPATION FREQUENCY",
                 "MAP: (trackId, 1) for OCCUPIED events | REDUCE: sum"
         );
         Terminal.blank();
+        result.occupations().forEach((track, count) -> Terminal.line("  " + track + " → " + count
+                + (count == 1 ? " occupation" : " occupations")));
 
-        PairFlatMapFunction<String, String, Integer> mapper =
-                RailwayEventAnalytics::mapTrackOccupation;
-
-        List<Tuple2<String, Integer>> occupations = events
-                .flatMapToPair(mapper)
-                .reduceByKey(Integer::sum)
-                .sortByKey()
-                .collect();
-
-        for (Tuple2<String, Integer> entry : occupations) {
-            Terminal.line("  " + entry._1() + " → " + entry._2()
-                    + (entry._2() == 1 ? " occupation" : " occupations"));
-        }
-    }
-
-    // =========================================================
-    // ANALYSIS 3 - TRAIN REQUESTS PROCESSED PER STATION
-    // Cross-checks Experiment 6: the counts are computed from the logs
-    // and compared with the load balancer's own record.
-    // =========================================================
-
-    private static void runRequestsPerStation(JavaRDD<String> events,
-                                              Map<String, Integer> loadBalancerCounts) {
-
+        // ---------------- ANALYSIS 3 ----------------
         Terminal.banner(
                 "ANALYSIS 3 - TRAIN REQUESTS PROCESSED PER STATION",
                 "MAP: (station, 1) per TRAIN_EVENT | REDUCE: sum"
         );
         Terminal.blank();
-
-        PairFlatMapFunction<String, String, Integer> mapper =
-                RailwayEventAnalytics::mapTrainRequestByStation;
-
-        Map<String, Integer> fromLogs = new LinkedHashMap<>();
-        for (Tuple2<String, Integer> entry : events
-                .flatMapToPair(mapper)
-                .reduceByKey(Integer::sum)
-                .collect()) {
-            fromLogs.put(entry._1(), entry._2());
-        }
-
-        boolean allMatch = true;
-
-        for (Map.Entry<String, Integer> expected : loadBalancerCounts.entrySet()) {
-
-            int counted = fromLogs.getOrDefault(expected.getKey(), 0);
-            boolean match = counted == expected.getValue();
-            allMatch &= match;
-
+        result.loadBalancerCounts().forEach((station, expected) -> {
+            int counted = result.requestsFromLogs().get(station);
             Terminal.line(String.format("  %s → %d requests   (load balancer: %d) %s",
-                    expected.getKey(), counted, expected.getValue(),
-                    match ? "✓" : "✗"));
-        }
+                    station, counted, expected, counted == expected ? "✓" : "✗"));
+        });
 
         Terminal.blank();
-        Terminal.line(allMatch
+        Terminal.line(result.matchesLoadBalancer()
                 ? "✓ MapReduce result matches the load balancer's routing decisions"
                 : "✗ MapReduce result differs from the load balancer");
+
+        // ---------------- FINAL ----------------
+        Terminal.section("FINAL RAILWAY ANALYTICS");
+        result.reduced().forEach((track, count) ->
+                Terminal.line("  " + track + " → " + count + " coordination events"));
+        Terminal.blank();
+        Terminal.line("Busiest track: " + result.busiestTrack());
     }
 }

@@ -158,6 +158,9 @@ public class RailwayStation {
                 + "[L=" + timestamp + "] "
                 + message
         );
+
+        // Web dashboard: the same event as structured data
+        EventFeed.station(physicalTime, stationName, timestamp, message);
     }
 
     /** Prints an event caused by a received message (Lamport receive rule). */

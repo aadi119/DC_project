@@ -21,6 +21,9 @@ public final class MpiStations {
 
     public static final int ROOT = 0;
 
+    /** Prefix of the machine-readable result line read by the web dashboard. */
+    public static final String RESULT_MARKER = "@@RESULT@@";
+
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     // UTF-8 output so →, ✓ and ✗ print correctly
@@ -32,6 +35,15 @@ public final class MpiStations {
 
     public static String stationOf(int rank) {
         return String.format("STATION-%02d", rank + 1);
+    }
+
+    /** JSON array of integers. */
+    public static String json(int[] values) {
+        StringBuilder text = new StringBuilder("[");
+        for (int i = 0; i < values.length; i++) {
+            text.append(i == 0 ? "" : ",").append(values[i]);
+        }
+        return text.append(']').toString();
     }
 
     /** Line prefix: physical time, station and MPI rank. */

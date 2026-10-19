@@ -86,6 +86,11 @@ public class LoadBalancer {
         return new Decision(request, null, skipped);
     }
 
+    /** Station whose turn is next (before health checks). */
+    public synchronized String nextInRotation() {
+        return pool.get(nextIndex).getStationName();
+    }
+
     /** Requests assigned per station, in pool order. */
     public synchronized Map<String, Integer> getAssignmentCounts() {
 

@@ -1,3 +1,5 @@
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,7 +19,15 @@ import java.util.Map;
  */
 public class TrainControlClient {
 
+    /** One attempt to send a request, as shown on the web dashboard. */
+    public record Attempt(String requestId, int attempt, String trainId, String movement,
+                          String trackId, String primary, String status,
+                          Long version, String detail) {
+    }
+
     private final ReplicationManager replication;
+    private final List<Attempt> history = new ArrayList<>();
+    private final Map<String, Integer> attemptsPerRequest = new HashMap<>();
     private final Map<String, TrainRequest> awaitingRetry = new LinkedHashMap<>();
 
     private int sent = 0;
@@ -53,6 +63,9 @@ public class TrainControlClient {
 
     private void attempt(String requestId, TrainRequest request) {
 
+        int attempt = attemptsPerRequest.merge(requestId, 1, Integer::sum);
+        String primaryName = replication.getPrimary().getStationName();
+
         try {
             ReplicationManager.ClientReply reply =
                     replication.handleClientRequest(requestId, request);
@@ -62,6 +75,8 @@ public class TrainControlClient {
                 committed++;
                 Terminal.line("✓ " + requestId + " already committed at v" + reply.version()
                         + " → duplicate detected, NOT applied again");
+                record(requestId, attempt, request, primaryName, "DUPLICATE", reply.version(),
+                        "already applied at v" + reply.version() + " → not applied twice");
             } else if (reply.commit().accepted()) {
                 committed++;
                 List<String> backups = reply.commit().acknowledgedBy();
@@ -70,9 +85,15 @@ public class TrainControlClient {
                         + (backups.isEmpty()
                                 ? "   ⚠ no backup available"
                                 : "   replicated → " + String.join(", ", backups)));
+                record(requestId, attempt, request, primaryName, "COMMITTED", reply.version(),
+                        request.trackId() + " → " + reply.commit().newStatus()
+                                + (backups.isEmpty() ? " (no backup available)"
+                                        : " · replicated → " + String.join(", ", backups)));
             } else {
                 rejected++;
                 Terminal.line("✗ " + requestId + " REJECTED: " + reply.commit().reason());
+                record(requestId, attempt, request, primaryName, "REJECTED", null,
+                        reply.commit().reason());
             }
 
         } catch (ReplicationManager.PrimaryUnavailableException e) {
@@ -80,7 +101,22 @@ public class TrainControlClient {
             awaitingRetry.put(requestId, request);
             Terminal.line("⚠ " + requestId + " NO REPLY (" + e.getMessage()
                     + ") → client will retry");
+            record(requestId, attempt, request, primaryName, "NO_REPLY", null, e.getMessage());
         }
+    }
+
+    private void record(String requestId, int attempt, TrainRequest request, String primary,
+                        String status, Long version, String detail) {
+        history.add(new Attempt(requestId, attempt, request.trainId(),
+                request.movement().name(), request.trackId(), primary, status, version, detail));
+    }
+
+    public List<Attempt> getHistory() {
+        return List.copyOf(history);
+    }
+
+    public List<String> getPendingRequestIds() {
+        return List.copyOf(awaitingRetry.keySet());
     }
 
     public int getSent() {

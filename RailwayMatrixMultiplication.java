@@ -9,6 +9,10 @@ import mpi.MPI;
  * Run with MPJ Express:
  *     java -jar %MPJ_HOME%\lib\starter.jar -np 4 -cp target\classes RailwayMatrixMultiplication
  *
+ * Optional program arguments (used by the web dashboard):
+ *     --n=960    size of the Part B matrices
+ *     --json     also print one machine-readable result line
+ *
  * Algorithm (row-wise block decomposition), C = A × B:
  *
  *   1. SCATTER  the rows of A: each process receives a block of rows.
@@ -44,7 +48,9 @@ public class RailwayMatrixMultiplication {
 
     public static void main(String[] args) throws Exception {
 
-        MPI.Init(args);
+        String[] options = MPI.Init(args);
+        boolean json = java.util.Arrays.asList(options).contains("--json");
+        int largeN = parseSize(options);
 
         Intracomm world = MPI.COMM_WORLD;
         int rank = world.Rank();
@@ -60,11 +66,15 @@ public class RailwayMatrixMultiplication {
                     + MpiStations.stationOf(0) + " is the root)");
         }
 
-        partA(world, rank, size);
-        partB(world, rank, size);
+        String partA = partA(world, rank, size);
+        String partB = partB(world, rank, size, largeN);
 
         if (rank == MpiStations.ROOT) {
             MpiStations.banner("EXPERIMENT 10 COMPLETED → Parallel result verified ✓");
+            if (json) {
+                MpiStations.println(MpiStations.RESULT_MARKER + "{\"processes\":" + size
+                        + ",\"partA\":" + partA + ",\"partB\":" + partB + "}");
+            }
         }
 
         MPI.Finalize();
@@ -74,7 +84,8 @@ public class RailwayMatrixMultiplication {
     // PART A - RAILWAY NETWORK: 2-LEG ROUTES (A × A)
     // =========================================================
 
-    private static void partA(Intracomm world, int rank, int size) {
+    /** @return JSON summary on the root, null on other ranks */
+    private static String partA(Intracomm world, int rank, int size) {
 
         int n = JUNCTIONS.length;
 
@@ -102,17 +113,42 @@ public class RailwayMatrixMultiplication {
                     + " → J1 reaches J4 via one intermediate junction (J1 → J2 → J4)");
             MpiStations.println("Diagonal C[i][i] = number of lines at junction i (e.g. J2 has "
                     + (int) result.c()[n + 1] + ")");
-            verify(result.c(), multiplySequential(NETWORK, NETWORK, n), "C");
+            double maxDifference = verify(result.c(),
+                    multiplySequential(NETWORK, NETWORK, n), "C");
+
+            int[] rowCounts = rowCounts(n, size);
+            StringBuilder ranks = new StringBuilder("[");
+            for (int r = 0, row = 0; r < size; r++) {
+                StringBuilder rows = new StringBuilder("[");
+                for (int i = 0; i < rowCounts[r]; i++, row++) {
+                    rows.append(i == 0 ? "" : ",").append('"').append(JUNCTIONS[row]).append('"');
+                }
+                ranks.append(r == 0 ? "" : ",").append("{\"rank\":").append(r)
+                        .append(",\"station\":\"").append(MpiStations.stationOf(r))
+                        .append("\",\"rows\":").append(rows.append(']')).append('}');
+            }
+
+            StringBuilder junctions = new StringBuilder("[");
+            for (int i = 0; i < n; i++) {
+                junctions.append(i == 0 ? "" : ",").append('"').append(JUNCTIONS[i]).append('"');
+            }
+
+            return "{\"junctions\":" + junctions.append(']')
+                    + ",\"a\":" + matrixJson(NETWORK, n)
+                    + ",\"c\":" + matrixJson(result.c(), n)
+                    + ",\"ranks\":" + ranks.append(']')
+                    + ",\"verified\":" + (maxDifference < 1e-9) + "}";
         }
+        return null;
     }
 
     // =========================================================
     // PART B - PERFORMANCE: LARGE MATRICES
     // =========================================================
 
-    private static void partB(Intracomm world, int rank, int size) {
+    /** @return JSON summary on the root, null on other ranks */
+    private static String partB(Intracomm world, int rank, int size, int n) {
 
-        int n = LARGE_N;
         double[] a = new double[0];
         double[] b = new double[n * n];
         double[] sequential = null;
@@ -145,8 +181,15 @@ public class RailwayMatrixMultiplication {
             MpiStations.println(String.format("  Speedup    = Tseq / Tpar = %.2f×", speedup));
             MpiStations.println(String.format("  Efficiency = Speedup / p = %.0f%%",
                     100 * speedup / size));
-            verify(result.c(), sequential, "parallel C");
+            double maxDifference = verify(result.c(), sequential, "parallel C");
+
+            return String.format(java.util.Locale.ROOT,
+                    "{\"n\":%d,\"sequentialMs\":%.1f,\"parallelMs\":%.1f,"
+                            + "\"speedup\":%.3f,\"efficiency\":%.3f,\"verified\":%b}",
+                    n, sequentialNanos / 1e6, result.nanos() / 1e6,
+                    speedup, speedup / size, maxDifference < 1e-9);
         }
+        return null;
     }
 
     // =========================================================
@@ -165,11 +208,10 @@ public class RailwayMatrixMultiplication {
                                                      boolean showSteps) {
 
         // How many rows each process gets (the first n % size ranks get one extra)
-        int[] rowCounts = new int[size];
+        int[] rowCounts = rowCounts(n, size);
         int[] elementCounts = new int[size];
         int[] offsets = new int[size];
         for (int r = 0, offset = 0; r < size; r++) {
-            rowCounts[r] = n / size + (r < n % size ? 1 : 0);
             elementCounts[r] = rowCounts[r] * n;
             offsets[r] = offset;
             offset += elementCounts[r];
@@ -249,7 +291,39 @@ public class RailwayMatrixMultiplication {
         return c;
     }
 
-    private static void verify(double[] parallel, double[] sequential, String name) {
+    /** Rows of an n-row matrix given to each of size processes. */
+    private static int[] rowCounts(int n, int size) {
+        int[] counts = new int[size];
+        for (int r = 0; r < size; r++) {
+            counts[r] = n / size + (r < n % size ? 1 : 0);
+        }
+        return counts;
+    }
+
+    /** --n=SIZE (clamped to 60..2000) or the default size. */
+    private static int parseSize(String[] options) {
+        for (String option : options) {
+            if (option.startsWith("--n=")) {
+                return Math.max(60, Math.min(2000, Integer.parseInt(option.substring(4).trim())));
+            }
+        }
+        return LARGE_N;
+    }
+
+    private static String matrixJson(double[] m, int n) {
+        StringBuilder text = new StringBuilder("[");
+        for (int i = 0; i < n; i++) {
+            int[] row = new int[n];
+            for (int j = 0; j < n; j++) {
+                row[j] = (int) m[i * n + j];
+            }
+            text.append(i == 0 ? "" : ",").append(MpiStations.json(row));
+        }
+        return text.append(']').toString();
+    }
+
+    /** Prints the verdict and returns the largest element difference. */
+    private static double verify(double[] parallel, double[] sequential, String name) {
         double maxDifference = 0;
         for (int i = 0; i < sequential.length; i++) {
             maxDifference = Math.max(maxDifference, Math.abs(parallel[i] - sequential[i]));
@@ -259,6 +333,7 @@ public class RailwayMatrixMultiplication {
                 ? "✓ VERIFIED: " + name + " equals the sequential result (max difference "
                         + maxDifference + ")"
                 : "✗ MISMATCH: max difference " + maxDifference);
+        return maxDifference;
     }
 
     private static double[] randomMatrix(Random random, int n) {

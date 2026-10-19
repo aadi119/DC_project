@@ -17,6 +17,8 @@
         <scala.binary.version>2.13</scala.binary.version>
         <!-- Harmless placeholder; replaced on JDK 17-23 by the profile below -->
         <spark.jvm.compat>-Drailway.jvm=default</spark.jvm.compat>
+        <!-- Class started by exec:exec: Main (console demo) or RailwayWebServer (web site) -->
+        <main.class>Main</main.class>
     </properties>
 
     <dependencies>
@@ -25,6 +27,13 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-core_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
+        </dependency>
+
+        <!-- Web dashboard: JSON for the REST API -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.11.0</version>
         </dependency>
 
         <!--
@@ -97,7 +106,7 @@
                         <argument>--add-opens=java.base/sun.util.calendar=ALL-UNNAMED</argument>
                         <argument>-classpath</argument>
                         <classpath/>
-                        <argument>Main</argument>
+                        <argument>${main.class}</argument>
                     </arguments>
                 </configuration>
             </plugin>

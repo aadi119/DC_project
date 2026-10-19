@@ -9,6 +9,10 @@ import mpi.MPI;
  * Run with MPJ Express, one MPI process per railway station:
  *     java -jar %MPJ_HOME%\lib\starter.jar -np 4 -cp target\classes RailwayMpiCollectives
  *
+ * Optional program arguments (used by the web dashboard):
+ *     --state=13,0,0,110,0,0   track state to broadcast [version, TRACK-01..05]
+ *     --json                   also print one machine-readable result line
+ *
  * A collective operation involves EVERY process in the communicator:
  *
  *   BROADCAST (Bcast)  sends the exact same piece of data from one root
@@ -50,9 +54,15 @@ public class RailwayMpiCollectives {
     private static final int ACCEPT = 1;
     private static final int HOLD = 0;
 
+    /** Result of the broadcast step (checksums and verdict are only filled on the root). */
+    private record Broadcast(int[] state, int[] checksums, boolean verified) {
+    }
+
     public static void main(String[] args) throws Exception {
 
-        MPI.Init(args);
+        String[] options = MPI.Init(args);
+        boolean json = Arrays.asList(options).contains("--json");
+        int[] initialState = parseState(options);
 
         Intracomm world = MPI.COMM_WORLD;
         int rank = world.Rank();
@@ -72,10 +82,10 @@ public class RailwayMpiCollectives {
         }
         world.Barrier();
 
-        int[] trackState = broadcastTrackState(world, rank, size);
+        Broadcast broadcast = broadcastTrackState(world, rank, size, initialState);
         int[] myRequests = scatterTrainRequests(world, rank, size);
-        int[] myResults = processRequests(world, rank, myRequests, trackState);
-        gatherResults(world, rank, size, myResults);
+        int[] myResults = processRequests(world, rank, myRequests, broadcast.state());
+        gatherResults(world, rank, size, myResults, broadcast, json);
 
         MPI.Finalize();
     }
@@ -98,14 +108,15 @@ public class RailwayMpiCollectives {
     // 1. BROADCAST
     // =========================================================
 
-    private static int[] broadcastTrackState(Intracomm world, int rank, int size) {
+    private static Broadcast broadcastTrackState(Intracomm world, int rank, int size,
+                                                 int[] rootState) {
 
         int[] state = new int[STATE_SIZE];
 
         if (rank == MpiStations.ROOT) {
             MpiStations.section("1. BROADCAST  (root → every process)   MPI.COMM_WORLD.Bcast");
-            // Railway state held by the coordinator (final state of the replication experiments)
-            state = new int[] {13, 0, 0, 110, 0, 0};
+            // Railway state held by the coordinator
+            state = rootState.clone();
             MpiStations.println("Root " + MpiStations.stationOf(rank)
                     + " holds the railway track state and broadcasts it:");
             MpiStations.println("  " + describeState(state));
@@ -124,14 +135,15 @@ public class RailwayMpiCollectives {
         int[] allChecksums = new int[size];
         world.Gather(myChecksum, 0, 1, MPI.INT, allChecksums, 0, 1, MPI.INT, MpiStations.ROOT);
 
+        boolean identical = false;
         if (rank == MpiStations.ROOT) {
-            boolean identical = Arrays.stream(allChecksums).allMatch(c -> c == allChecksums[0]);
+            identical = Arrays.stream(allChecksums).allMatch(c -> c == allChecksums[0]);
             MpiStations.println("");
             MpiStations.println(identical
                     ? "✓ BROADCAST VERIFIED: all " + size + " stations hold the identical track state"
                     : "✗ BROADCAST FAILED: stations hold different states");
         }
-        return state;
+        return new Broadcast(state, allChecksums, identical);
     }
 
     // =========================================================
@@ -227,7 +239,8 @@ public class RailwayMpiCollectives {
     // 3. GATHER
     // =========================================================
 
-    private static void gatherResults(Intracomm world, int rank, int size, int[] myResults) {
+    private static void gatherResults(Intracomm world, int rank, int size, int[] myResults,
+                                      Broadcast broadcast, boolean json) {
 
         int[] all = new int[myResults.length * size];
 
@@ -292,6 +305,58 @@ public class RailwayMpiCollectives {
                 : "✗ GATHER FAILED: chunks are missing or out of rank order");
 
         MpiStations.banner("EXPERIMENT 9 COMPLETED → Broadcast ✓  Scatter ✓  Gather ✓");
+
+        if (json) {
+            printJsonResult(size, broadcast, all, accepted, inverseOfScatter);
+        }
+    }
+
+    /** One line the web dashboard can parse (prefixed with MpiStations.RESULT_MARKER). */
+    private static void printJsonResult(int size, Broadcast broadcast, int[] gathered,
+                                        int accepted, boolean gatherVerified) {
+
+        int total = gathered.length / RESULT_FIELDS;
+        int perStation = total / size;
+
+        StringBuilder requests = new StringBuilder("[");
+        for (int i = 0; i < TRAIN_REQUESTS.length; i++) {
+            requests.append(i == 0 ? "" : ",").append(MpiStations.json(TRAIN_REQUESTS[i]));
+        }
+
+        StringBuilder chunks = new StringBuilder("[");
+        for (int r = 0; r < size; r++) {
+            int[] trains = new int[perStation];
+            for (int i = 0; i < perStation; i++) {
+                trains[i] = TRAIN_REQUESTS[r * perStation + i][0];
+            }
+            chunks.append(r == 0 ? "" : ",").append(MpiStations.json(trains));
+        }
+
+        StringBuilder results = new StringBuilder("[");
+        for (int i = 0; i < total; i++) {
+            int base = i * RESULT_FIELDS;
+            results.append(i == 0 ? "" : ",")
+                    .append("{\"train\":").append(gathered[base])
+                    .append(",\"track\":").append(gathered[base + 1])
+                    .append(",\"rank\":").append(gathered[base + 2])
+                    .append(",\"station\":\"").append(MpiStations.stationOf(gathered[base + 2])).append('"')
+                    .append(",\"minutes\":").append(gathered[base + 3])
+                    .append(",\"accept\":").append(gathered[base + 4] == ACCEPT)
+                    .append('}');
+        }
+
+        MpiStations.println(MpiStations.RESULT_MARKER + "{"
+                + "\"processes\":" + size
+                + ",\"state\":" + MpiStations.json(broadcast.state())
+                + ",\"checksums\":" + MpiStations.json(broadcast.checksums())
+                + ",\"broadcastVerified\":" + broadcast.verified()
+                + ",\"requests\":" + requests.append(']')
+                + ",\"chunks\":" + chunks.append(']')
+                + ",\"results\":" + results.append(']')
+                + ",\"accepted\":" + accepted
+                + ",\"held\":" + (total - accepted)
+                + ",\"gatherVerified\":" + gatherVerified
+                + "}");
     }
 
     // =========================================================
@@ -305,6 +370,24 @@ public class RailwayMpiCollectives {
                     .append(state[track] == 0 ? "CLEAR" : "OCCUPIED(TRAIN-" + state[track] + ")");
         }
         return text.toString();
+    }
+
+    /** --state=v,t1,t2,t3,t4,t5 or the default state if absent. */
+    private static int[] parseState(String[] options) {
+        for (String option : options) {
+            if (option.startsWith("--state=")) {
+                String[] parts = option.substring("--state=".length()).split(",");
+                if (parts.length == STATE_SIZE) {
+                    int[] state = new int[STATE_SIZE];
+                    for (int i = 0; i < STATE_SIZE; i++) {
+                        state[i] = Integer.parseInt(parts[i].trim());
+                    }
+                    return state;
+                }
+            }
+        }
+        // Default: final railway state of the replication / fault-tolerance runs
+        return new int[] {13, 0, 0, 110, 0, 0};
     }
 
     private static int checksum(int[] values) {
