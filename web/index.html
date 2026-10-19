@@ -3,57 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Railway Coordination System</title>
+  <title>RailNet Ops</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div class="app">
-    <aside class="sidebar">
-      <a class="brand" href="#/overview">
-        <span class="brand-mark">
-          <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="4" width="18" height="18" rx="5" fill="none" stroke="currentColor" stroke-width="2.2"/><rect x="10.5" y="8" width="11" height="6" rx="1.5" fill="currentColor" opacity=".85"/><circle cx="11.5" cy="18" r="1.6" fill="currentColor"/><circle cx="20.5" cy="18" r="1.6" fill="currentColor"/><path d="M10 22l-3 6M22 22l3 6M8.5 26h15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        </span>
-        <span>
-          <strong>RailCoord</strong>
-          <small>Distributed Railway Coordination</small>
-        </span>
-      </a>
-      <nav id="nav"></nav>
-      <div class="sidebar-foot">
-        <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">Connecting…</span></div>
-        <button class="btn ghost-light small" id="reset-btn" title="Restart the railway system from its initial state">Reset system</button>
-      </div>
-    </aside>
-
-    <div class="main">
-      <header class="topbar">
-        <div class="titles">
-          <div class="eyebrow" id="page-eyebrow"></div>
-          <h1 id="page-title">Overview</h1>
-        </div>
-        <div class="chips" id="status-chips"></div>
-        <button class="btn console-toggle" id="console-toggle" title="Show the live server console">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 8l2.5 2-2.5 2M10 12.5h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          Console
-        </button>
-      </header>
-      <main id="page" class="page"></main>
+  <header class="topnav">
+    <a class="logo" href="#/network" aria-label="RailNet Ops home">
+      <span class="logo-mark">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6 24 C 12 8, 20 8, 26 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="6" cy="24" r="3.2" fill="currentColor"/><circle cx="26" cy="24" r="3.2" fill="currentColor"/><circle cx="16" cy="12.2" r="3.2" fill="#0b1220" stroke="currentColor" stroke-width="2.2"/></svg>
+      </span>
+      <span class="logo-text">RailNet<b>OPS</b></span>
+    </a>
+    <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+    <div class="top-right">
+      <span class="clock mono" id="clock">--:--:--</span>
+      <span class="sync-pill" id="sync-pill"><i></i><span>connecting</span></span>
+      <label class="switch" title="Keep traffic flowing automatically">
+        <input type="checkbox" id="autopilot"><span class="track"><span class="knob"></span></span><span class="switch-label">Autopilot</span>
+      </label>
+      <button class="icon-btn" id="logs-btn" title="Live system logs">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 8l2.5 2L6 12M10.5 12.5h3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span>Logs</span>
+      </button>
     </div>
-  </div>
+  </header>
 
-  <section class="console" id="console" aria-label="Live server console">
-    <div class="console-head">
-      <strong>Live server console</strong>
-      <span class="muted-light">exact output of the Java backend</span>
-      <label class="console-follow"><input type="checkbox" id="console-follow" checked> follow</label>
-      <button class="btn ghost-light small" id="console-clear">Clear</button>
-      <button class="btn ghost-light small" id="console-close">Close</button>
+  <main id="view" class="view"></main>
+
+  <section class="drawer" id="logs" aria-label="Live system logs">
+    <div class="drawer-head">
+      <b>System logs</b><span class="dim">live output of the RailNet backend</span>
+      <span class="grow"></span>
+      <label class="mini-check"><input type="checkbox" id="logs-follow" checked> follow</label>
+      <button class="ghost-btn" id="logs-clear">Clear</button>
+      <button class="ghost-btn" id="logs-close">Close</button>
     </div>
-    <pre id="console-body"></pre>
+    <pre id="logs-body"></pre>
   </section>
 
   <div id="toasts" aria-live="polite"></div>
-  <script src="app.js"></script>
+
+  <script src="js/core.js"></script>
+  <script src="js/network-map.js"></script>
+  <script src="js/pages.js"></script>
 </body>
 </html>

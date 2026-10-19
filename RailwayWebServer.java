@@ -56,13 +56,31 @@ public final class RailwayWebServer {
                 StandardCharsets.UTF_8);
         System.setOut(new PrintStream(new ConsoleCapture(terminal), true, StandardCharsets.UTF_8));
 
-        int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+        int preferredPort = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         Path webRoot = Path.of("web").toAbsolutePath();
+
+        stopWhenLauncherExits();
 
         RailwaySystem system = new RailwaySystem();
         RailwayWebServer server = new RailwayWebServer(system, webRoot);
 
-        HttpServer http = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+        // Use the preferred port, or the next free one if it is taken
+        HttpServer http = null;
+        int port = preferredPort;
+        for (; port < preferredPort + 10 && http == null; port++) {
+            try {
+                http = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+            } catch (java.net.BindException e) {
+                System.out.println("⚠ Port " + port + " is already in use, trying " + (port + 1));
+            }
+        }
+        if (http == null) {
+            System.out.println("✗ No free port between " + preferredPort + " and " + (port - 1)
+                    + ". Close the other server and try again.");
+            System.exit(1);
+        }
+        port--; // the loop advanced past the port that worked
+
         AtomicInteger threadNumber = new AtomicInteger(1);
         http.setExecutor(Executors.newFixedThreadPool(8, task -> {
             Thread t = new Thread(task, "http-worker-" + threadNumber.getAndIncrement());
@@ -73,7 +91,7 @@ public final class RailwayWebServer {
         http.createContext("/", server::handleStatic);
         http.start();
 
-        Terminal.banner("RAILWAY COORDINATION DASHBOARD",
+        Terminal.banner("RAILNET OPS · RAILWAY COORDINATION",
                 "Open http://localhost:" + port + " in your browser",
                 "Press Ctrl+C to stop");
 
@@ -85,6 +103,28 @@ public final class RailwayWebServer {
                 System.out.println("(Could not open a browser automatically: " + e.getMessage() + ")");
             }
         }
+    }
+
+    /**
+     * When started through Maven, pressing Ctrl+C can end Maven but leave this
+     * server running in the background (still holding the port). Watch the
+     * launching process and shut down as soon as it is gone.
+     */
+    private static void stopWhenLauncherExits() {
+        ProcessHandle.current().parent().ifPresent(launcher -> {
+            Thread watcher = new Thread(() -> {
+                while (launcher.isAlive()) {
+                    try {
+                        Thread.sleep(1500);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+                System.exit(0);
+            }, "launcher-watch");
+            watcher.setDaemon(true);
+            watcher.start();
+        });
     }
 
     // =========================================================

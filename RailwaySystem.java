@@ -55,6 +55,7 @@ public final class RailwaySystem {
     private int nextSequence;
     private int nextClientRequest;
     private int nextTrainNumber;
+    private int failovers;
 
     // Latest result of each kind, shown again when a page is reopened
     private final Map<String, Object> lastResults = new LinkedHashMap<>();
@@ -92,6 +93,7 @@ public final class RailwaySystem {
             nextSequence = 1;
             nextClientRequest = 801;
             nextTrainNumber = 301;
+            failovers = 0;
             lastResults.clear();
             return Map.of("message", "System reset: STATION-04 is coordinator and primary");
         });
@@ -168,6 +170,7 @@ public final class RailwaySystem {
         state.put("version", primary.getReplica().getVersion());
         state.put("tracks", tracks);
         state.put("nextInRotation", loadBalancer.nextInRotation());
+        state.put("failovers", failovers);
         state.put("client", clientInfo);
         state.put("lastSeq", EventFeed.lastSeq());
         synchronized (lastResults) {
@@ -701,6 +704,7 @@ public final class RailwaySystem {
                 Terminal.section("AUTOMATIC FAILOVER");
                 try {
                     RailwayStation newPrimary = replication.failover(stations);
+                    failovers++;
                     result.put("newPrimary", newPrimary.getStationName());
                     result.put("noDataLoss", true);
                 } catch (IllegalStateException e) {

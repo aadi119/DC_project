@@ -30,10 +30,23 @@ mvn -q compile exec:exec -Dmain.class=RailwayWebServer
 ```
 
 Then open http://localhost:8080 (on Windows, `run-site.cmd` does this for you and
-opens the browser automatically). Every button calls the real Java code:
-crash and recover stations, run elections, replicate updates, dispatch trains,
-run the Spark job and launch real MPI processes. A live console panel shows the
-backend's output.
+opens the browser automatically).
+
+**RailNet Ops** is a railway operations console in which every concept runs as
+part of normal operation; every button calls the real Java code:
+
+| Screen | What happens | Concepts at work |
+|---|---|---|
+| Network | Animated map: trains, signals, heartbeats, replication packets; station inspector; Autopilot | replication, heartbeats, Lamport clocks |
+| Dispatch | Round-robin routing wheel, controller worker threads, signal box | load balancing, multithreading |
+| Resilience | Incidents, heartbeat monitor, automatic failover, mirror integrity, request journal, elections | fault tolerance, consistency, Bully/Ring |
+| Timeline | Causal timeline drawn from real events by logical time | Lamport clocks |
+| Insights | Traffic analytics pipeline and track heat map | MapReduce on Apache Spark |
+| Fleet Sync | Live state pushed to a compute cluster, animated | MPI Broadcast / Scatter / Gather |
+| Route Planner | Two-leg routes on a junction graph, cluster scaling chart | parallel matrix multiplication (MPI) |
+| System | Station API explorer, load test, live threads | RPC / client-server, thread pool |
+
+The Logs button opens the backend's live console output.
 
 - `RailwaySystem` holds the live system and offers one method per action.
 - `RailwayWebServer` serves the site in `web/` and the JSON API under `/api/`.
