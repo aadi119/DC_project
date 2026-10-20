@@ -481,6 +481,13 @@ page({
       <div class="mt-s" id="tl-rule"></div>
     </div>
     <div class="panel mt">
+      <div class="panel-head"><h3>Station clocks</h3><span class="sub">physical time · offset from GPS time</span>${info('Every station has its own <b>physical clock</b>. Each starts with a different error (offset) and runs slightly fast or slow (drift, in ppm).<br><br><b>Sync with GPS</b> runs <b>Cristian\'s algorithm</b>: the station asks a time server, measures the round trip (RTT) and sets its clock to server time + RTT/2.<br><br><b>Berkeley round</b>: the coordinator polls every clock, leaves out clocks that are more than ±2 s off, averages the rest and sends each station its own correction, so the clocks agree with each other.')}
+        <span class="right"><select id="clk-station">${STATIONS.map((s) => `<option value="${s}">${place(s)}</option>`).join('')}</select><button class="btn sm" data-act="clkCristian">Sync with GPS</button><button class="btn sm primary" data-act="clkBerkeley">Berkeley round</button><button class="btn sm warn" data-act="clkDisturb">Disturb clocks</button></span></div>
+      <div class="clk-faces" id="clk-faces"></div>
+      <div class="clk-scale" id="clk-scale"><div class="clk-axis"></div><div class="clk-zero"><span>GPS time</span></div>${STATIONS.map((s, i) => `<div class="clk-dot r${i}" data-st="${s}" style="--c:${ST_COLOR[s]}"><span>${esc(place(s))}</span></div>`).join('')}<div class="clk-ticks"><span>−4 s</span><span>−2 s</span><span>0</span><span>+2 s</span><span>+4 s</span></div></div>
+      <div id="clk-result" class="mt-s"></div>
+    </div>
+    <div class="panel mt">
       <div class="panel-head"><h3>Causal timeline</h3><span class="sub">x = logical time λ · arrows = messages between stations</span>
         <span class="right"><span class="dim" style="font-size:12px">show last</span><select id="tl-win"><option>40</option><option selected>80</option><option>160</option></select></span></div>
       <div class="tl-scroll" id="tl-chart"></div>
@@ -490,11 +497,14 @@ page({
       <div class="panel"><div class="panel-head"><h3>Total order</h3><span class="sub">sorted by (λ, station)</span></div><div id="tl-order" class="scroll" style="max-height:320px"></div></div>
     </div>`,
   mount() {
+    local.clkTimer = setInterval(tickClocks, 97);
     $('#tl-win').value = String(local.tlWindow);
     $('#tl-win').addEventListener('change', (e) => { local.tlWindow = +e.target.value; App.page.update(); });
   },
+  leave() { clearInterval(local.clkTimer); },
   update() {
     const s = App.state;
+    updateClocks(s);
     view('#tl-clocks').html = s.stations.map((st) => `<div class="metric" style="border-top:3px solid ${ST_COLOR[st.name]}"><div class="label">${esc(place(st.name))}</div><div class="value mono">λ ${st.lamport}</div><div class="hint">${st.active ? 'online' : 'offline'}</div></div>`).join('');
     view('#tl-chart').html = timelineSvg(App.events.slice(-local.tlWindow));
     const ordered = App.events.slice(-30).sort((a, b) => a.lamport - b.lamport || a.station.localeCompare(b.station));
@@ -532,6 +542,52 @@ function timelineSvg(events) {
   }
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs><marker id="tlArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a78bfa"/></marker></defs>${svg}</svg>`;
 }
+
+/* ---------- physical clocks (Cristian / Berkeley) ---------- */
+
+const pad3 = (n) => String(n).padStart(3, '0');
+const fmtClock = (ms) => { const d = new Date(ms); return d.toTimeString().slice(0, 8) + '.' + pad3(d.getMilliseconds()); };
+const signed = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(Math.round(v)).toLocaleString() + ' ms';
+
+function updateClocks(s) {
+  local.clkBase = { server: s.serverTimeMs, at: performance.now() };
+  view('#clk-faces').html = s.stations.map((st) => `<div class="clk-face" style="--c:${ST_COLOR[st.name]}">
+      <div class="clk-name">${esc(place(st.name))}${st.coordinator ? ' <span class="chip c-gold">master</span>' : ''}${st.active ? '' : ' <span class="chip c-red">offline</span>'}</div>
+      <div class="clk-time mono" data-off="${st.clockOffsetMs}">--:--:--.---</div>
+      <div class="clk-meta"><span class="${Math.abs(st.clockOffsetMs) > 2000 ? 'bad' : ''}">${signed(st.clockOffsetMs)}</span><span class="dim">drift ${st.driftPpm > 0 ? '+' : ''}${st.driftPpm} ppm</span></div>
+    </div>`).join('') + `<div class="clk-face skew"><div class="clk-name">Clock skew</div><div class="clk-time mono">${s.clockSkewMs.toLocaleString()} ms</div><div class="clk-meta"><span class="dim">largest gap between two clocks</span></div></div>`;
+  for (const st of s.stations) {
+    const dot = document.querySelector(`.clk-dot[data-st="${st.name}"]`);
+    if (!dot) continue;
+    const pct = 50 + Math.max(-4400, Math.min(4400, st.clockOffsetMs)) / 4400 * 46;
+    dot.style.left = pct + '%';
+    dot.classList.toggle('off', !st.active);
+  }
+  const r = s.results.clock;
+  if (!r) { view('#clk-result').html = '<div class="empty">Disturb the clocks, then synchronise them with GPS (Cristian) or with each other (Berkeley).</div>'; return; }
+  const x = r.result;
+  if (r.algorithm === 'Cristian') {
+    view('#clk-result').html = `<div class="clk-steps"><span class="chip c-cyan">Cristian · ${esc(place(x.client))}</span>
+      <span>T0 <b class="mono">${fmtClock(x.t0)}</b></span><span>→ server Ts <b class="mono">${fmtClock(x.serverTime)}</b></span><span>→ T1 <b class="mono">${fmtClock(x.t1)}</b></span>
+      <span>RTT <b>${x.roundTripMs} ms</b></span><span>new time = Ts + RTT/2 → adjust <b>${signed(x.adjustmentMs)}</b></span><span class="dim">error ≤ ±${Math.round(x.errorBoundMs)} ms</span></div>`;
+  } else {
+    view('#clk-result').html = `<div class="clk-steps"><span class="chip c-gold">Berkeley · master ${esc(place(x.master))}</span><span>average of included clocks <b>${signed(x.averageOffsetMs)}</b></span><span>skew <b>${Math.round(x.skewBeforeMs).toLocaleString()} ms → ${Math.round(x.skewAfterMs)} ms</b></span>${x.unreachable.length ? `<span class="bad">no reply: ${x.unreachable.map(place).join(', ')}</span>` : ''}</div>
+      <table class="mt-s"><thead><tr><th>Station</th><th>Reading</th><th>RTT</th><th>Offset vs master</th><th>In average</th><th>Correction sent</th></tr></thead><tbody>${x.readings.map((g) => `<tr><td style="color:${ST_COLOR[g.station]};font-weight:700">${esc(place(g.station))}</td><td class="mono">${fmtClock(g.reading)}</td><td class="mono">${g.roundTripMs} ms</td><td class="mono">${signed(g.estimatedOffsetMs)}</td><td>${g.included ? chip('yes', 'c-green') : chip('outlier', 'c-red')}</td><td class="mono"><b>${signed(g.adjustmentMs)}</b></td></tr>`).join('')}</tbody></table>`;
+  }
+}
+
+function tickClocks() {
+  const base = local.clkBase;
+  if (!base) return;
+  const now = base.server + (performance.now() - base.at);
+  for (const el of document.querySelectorAll('.clk-time[data-off]')) el.textContent = fmtClock(now + Number(el.dataset.off));
+}
+
+Object.assign(ACTIONS, {
+  clkCristian: (b) => act(b, '/clocks/cristian', { station: $('#clk-station').value }, (r) => `⏱ ${place(r.result.client)} synced with GPS: adjusted ${signed(r.result.adjustmentMs)} (RTT ${r.result.roundTripMs} ms)`),
+  clkBerkeley: (b) => act(b, '/clocks/berkeley', {}, (r) => `⏱ Berkeley round: skew now ${r.skewMs} ms`),
+  clkDisturb: (b) => act(b, '/clocks/disturb', {}),
+});
 
 Object.assign(ACTIONS, {
   tlSend: async (b) => {
@@ -837,7 +893,7 @@ page({
     </div>
     <div class="grid side-main">
       <div class="panel">
-        <div class="panel-head"><h3>Station API</h3>${info('<b>Client-server RPC.</b> Each call is a request (method + parameters) marshalled to JSON, sent to the server, executed on the target station, and answered with a result or an error. An offline station cannot answer, so the call fails like a real remote failure.')}</div>
+        <div class="panel-head"><h3>Station API</h3>${info('<b>Client-server RPC.</b> The browser sends a JSON-RPC request to the server. For a station method, the server looks the station up in the <b>Java RMI registry</b> and calls it through its <b>stub</b>: the call travels over TCP to the station\'s remote object, runs on an RMI connection thread and the result is serialized back. An offline station has been withdrawn from RMI, so the call fails with a real <b>RemoteException</b>.')}</div>
         <div class="method-list" id="sy-methods">${API_METHODS.map(([m, d], k) => `<button class="method ${k === 0 ? 'active' : ''}" data-act="pickMethod" data-m="${m}"><b><span class="verb">CALL</span>${m}</b><span>${d}</span></button>`).join('')}</div>
         <div class="row mt"><select id="sy-station">${STATIONS.map((s) => `<option value="${s}">${place(s)}</option>`).join('')}</select><button class="btn primary" data-act="callApi">Send request</button></div>
       </div>
@@ -878,9 +934,9 @@ function renderApi() {
   if ($('#sy-station')) $('#sy-station').disabled = !needs;
   if (!last) return;
   $('#sy-req').innerHTML = jsonHtml(last.req);
-  const shown = { ...last.res }; delete shown.servedBy; delete shown.latencyMs;
+  const shown = { ...last.res }; delete shown.servedBy; delete shown.latencyMs; delete shown.transport; delete shown.endpoint;
   $('#sy-res').innerHTML = jsonHtml(shown);
-  $('#sy-meta').innerHTML = `${last.res.error ? chip('ERROR ' + last.res.error.code, 'c-red') : chip('200 OK', 'c-green')} <span class="dim mono" style="font-size:12px">${esc(last.res.servedBy)} · ${last.res.latencyMs} ms</span>`;
+  $('#sy-meta').innerHTML = `${last.res.error ? chip('ERROR ' + last.res.error.code, 'c-red') : chip('200 OK', 'c-green')} ${last.res.transport ? chip(last.res.transport, 'c-violet') : ''} <span class="dim mono" style="font-size:12px">${esc(last.res.servedBy)} · ${last.res.latencyMs} ms</span>${last.res.endpoint ? `<div class="dim mono" style="font-size:11.5px;margin-top:4px">${esc(last.res.endpoint)}</div>` : ''}`;
 }
 function jsonHtml(v) {
   return esc(JSON.stringify(v, null, 2))

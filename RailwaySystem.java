@@ -5,6 +5,9 @@ import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.rmi.RemoteException;
+import java.rmi.ServerException;
+import java.util.Random;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +55,10 @@ public final class RailwaySystem {
     private volatile TrainControlClient client;
     private FailureDetector detector;
 
+    // Experiment 1: every station is also published as a Java RMI remote object
+    private final StationRmiServer rmi;
+    private final Random random = new Random();
+
     private int nextSequence;
     private int nextClientRequest;
     private int nextTrainNumber;
@@ -61,7 +68,43 @@ public final class RailwaySystem {
     private final Map<String, Object> lastResults = new LinkedHashMap<>();
 
     public RailwaySystem() {
+        rmi = startRmi();
         reset();
+    }
+
+    private static StationRmiServer startRmi() {
+        try {
+            String port = System.getenv("RMI_PORT");
+            StationRmiServer server = StationRmiServer.start(
+                    port == null ? StationRmiServer.DEFAULT_PORT : Integer.parseInt(port));
+            Terminal.line("✓ Java RMI registry on port " + server.getPort());
+            return server;
+        } catch (RemoteException | RuntimeException e) {
+            Terminal.line("⚠ Java RMI registry could not start (" + e.getMessage()
+                    + "): the station API answers in-process");
+            return null;
+        }
+    }
+
+    /**
+     * Keeps the RMI registry in line with the stations: a running station is
+     * published, a crashed one is withdrawn (its remote object stops answering).
+     */
+    private void syncRmi() {
+        if (rmi == null) {
+            return;
+        }
+        for (RailwayStation s : stations) {
+            try {
+                if (s.isActive() && !rmi.isPublished(s.getStationName())) {
+                    rmi.publish(s);
+                } else if (!s.isActive() && rmi.isPublished(s.getStationName())) {
+                    rmi.withdraw(s.getStationName());
+                }
+            } catch (RemoteException e) {
+                Terminal.line("⚠ RMI: could not publish " + s.getStationName() + ": " + e.getMessage());
+            }
+        }
     }
 
     // =========================================================
@@ -81,6 +124,11 @@ public final class RailwaySystem {
                 stations.add(new RailwayStation(String.format("STATION-%02d", id), id));
             }
             station("STATION-04").setCoordinator(true);
+            if (rmi != null) {
+                for (RailwayStation s : stations) {
+                    rmi.withdraw(s.getStationName());
+                }
+            }
 
             replication = new ReplicationManager(station("STATION-04"),
                     List.of(station("STATION-01"), station("STATION-02")));
@@ -139,6 +187,10 @@ public final class RailwaySystem {
             m.put("checksum", s.getReplica().checksum());
             m.put("events", s.getEventCount());
             m.put("assigned", assigned.getOrDefault(s.getStationName(), 0));
+            m.put("clockOffsetMs", Math.round(s.getPhysicalClock().currentOffsetMs()));
+            m.put("driftPpm", s.getPhysicalClock().getDriftPpm());
+            m.put("rmi", rmi != null && rmi.isPublished(s.getStationName())
+                    ? rmi.url(s.getStationName()) : null);
             stationList.add(m);
         }
 
@@ -171,6 +223,9 @@ public final class RailwaySystem {
         state.put("tracks", tracks);
         state.put("nextInRotation", loadBalancer.nextInRotation());
         state.put("failovers", failovers);
+        state.put("clockSkewMs", Math.round(ClockSync.skew(stations)));
+        state.put("serverTimeMs", System.currentTimeMillis());
+        state.put("rmiPort", rmi == null ? null : rmi.getPort());
         state.put("client", clientInfo);
         state.put("lastSeq", EventFeed.lastSeq());
         synchronized (lastResults) {
@@ -224,14 +279,33 @@ public final class RailwaySystem {
     }
 
     /** Every station reports its own status (Experiment 4 heartbeat monitoring). */
+    /**
+     * One heartbeat round: a live monitor (the coordinator, or the lowest-ID
+     * running station) sends a heartbeat to every other station. A crashed
+     * station cannot answer, so the monitor records the missing reply.
+     */
     public Map<String, Object> heartbeatRound() {
         return action(() -> {
-            Terminal.section("HEARTBEAT MONITORING");
+            RailwayStation monitor = stations.stream()
+                    .filter(s -> s.isCoordinator() && s.isActive()).findFirst()
+                    .orElse(stations.stream().filter(RailwayStation::isActive).findFirst()
+                            .orElseThrow(() -> new ActionException("No station is running")));
+
+            Terminal.section("HEARTBEAT MONITORING (" + monitor.getStationName() + " monitors)");
             Map<String, Boolean> alive = new LinkedHashMap<>();
             for (RailwayStation s : stations) {
-                alive.put(s.getStationName(), s.checkHeartbeat());
+                if (s == monitor) {
+                    alive.put(s.getStationName(), true);
+                    continue;
+                }
+                int sendTimestamp = monitor.printEvent("HEARTBEAT → " + s.getStationName());
+                boolean answered = s.answerHeartbeat(sendTimestamp, monitor);
+                if (!answered) {
+                    monitor.printEvent("No reply from " + s.getStationName() + " (heartbeat round)");
+                }
+                alive.put(s.getStationName(), answered);
             }
-            return Map.of("alive", alive);
+            return Map.of("monitor", monitor.getStationName(), "alive", alive);
         });
     }
 
@@ -250,23 +324,41 @@ public final class RailwaySystem {
         response.put("jsonrpc", "2.0");
         response.put("id", id);
 
-        synchronized (lock) {
-            try {
-                Object result = switch (method) {
-                    case "cluster.getCoordinator" -> coordinatorName();
-                    case "replication.getPrimary" -> Map.of(
-                            "primary", replication.getPrimary().getStationName(),
-                            "backups", replication.getBackups().stream()
-                                    .map(RailwayStation::getStationName).toList(),
-                            "version", replication.getPrimary().getReplica().getVersion());
-                    case "station.ping", "station.getLamportClock", "station.getTrackState" ->
-                            stationRpc(method, station(stationName));
-                    default -> throw new RpcError(-32601, "Method not found: " + method);
-                };
-                response.put("result", result);
-            } catch (RpcError e) {
-                response.put("error", Map.of("code", e.code, "message", e.getMessage()));
-            }
+        try {
+            Object result = switch (method) {
+                case "cluster.getCoordinator" -> {
+                    synchronized (lock) {
+                        yield coordinatorName();
+                    }
+                }
+                case "replication.getPrimary" -> {
+                    synchronized (lock) {
+                        yield Map.of(
+                                "primary", replication.getPrimary().getStationName(),
+                                "backups", replication.getBackups().stream()
+                                        .map(RailwayStation::getStationName).toList(),
+                                "version", replication.getPrimary().getReplica().getVersion());
+                    }
+                }
+                case "station.ping", "station.getLamportClock", "station.getTrackState" -> {
+                    // No system lock: stations are thread-safe, so the thread
+                    // pool can serve many of these calls at the same time
+                    RailwayStation s = station(stationName);
+                    if (rmi != null) {
+                        response.put("transport", "Java RMI");
+                        response.put("endpoint", rmi.url(s.getStationName()));
+                        yield stationRmiCall(method, s);
+                    }
+                    response.put("transport", "in-process");
+                    yield stationLocalCall(method, s);
+                }
+                default -> throw new RpcError(-32601, "Method not found: " + method);
+            };
+            response.put("result", result);
+        } catch (RpcError e) {
+            response.put("error", Map.of("code", e.code, "message", e.getMessage()));
+        } catch (ActionException e) {
+            response.put("error", Map.of("code", -32602, "message", e.getMessage()));
         }
 
         response.put("servedBy", Thread.currentThread().getName());
@@ -283,20 +375,111 @@ public final class RailwaySystem {
         }
     }
 
-    private Object stationRpc(String method, RailwayStation s) {
+    /** Calls the station through its RMI stub, looked up in the registry. */
+    private Object stationRmiCall(String method, RailwayStation s) {
+        StationRemote stub;
+        try {
+            stub = rmi.lookup(s.getStationName());
+        } catch (Exception e) {
+            throw new RpcError(-32000, s.getStationName() + " is not bound in the RMI registry");
+        }
+        try {
+            return switch (method) {
+                case "station.ping" -> {
+                    StationRemote.PingReply reply = stub.ping();
+                    yield Map.of("station", reply.station(), "status", reply.status(),
+                            "lamport", reply.lamport(), "rmiThread", reply.servedBy());
+                }
+                case "station.getLamportClock" -> Map.of("station", s.getStationName(),
+                        "lamport", stub.getLamportClock());
+                default -> {
+                    Map<String, TrackStateReplica.TrackStatus> tracks = stub.getTrackState();
+                    yield Map.of("station", s.getStationName(),
+                            "version", stub.getStateVersion(), "tracks", tracks);
+                }
+            };
+        } catch (RemoteException e) {
+            Throwable cause = e instanceof ServerException && e.getCause() != null ? e.getCause() : e;
+            String message = cause.getMessage() == null ? "" : cause.getMessage().split("\\R")[0];
+            throw new RpcError(-32000, s.getStationName() + " unreachable → "
+                    + cause.getClass().getName() + ": " + message);
+        }
+    }
+
+    /** Fallback when no RMI registry could be started. */
+    private Object stationLocalCall(String method, RailwayStation s) {
         if (!s.isActive()) {
             throw new RpcError(-32000, s.getStationName() + " is not responding (connection refused)");
         }
-        int timestamp = s.printEvent("RPC " + method + "() served for web client");
         return switch (method) {
             case "station.ping" -> Map.of("station", s.getStationName(), "status", "ALIVE",
-                    "lamport", timestamp);
+                    "lamport", s.printEvent("RPC station.ping() served for web client"));
             case "station.getLamportClock" -> Map.of("station", s.getStationName(),
                     "lamport", s.getLamportClock());
             default -> Map.of("station", s.getStationName(),
                     "version", s.getReplica().getVersion(),
                     "tracks", s.getReplica().snapshot());
         };
+    }
+
+    // =========================================================
+    // EXPERIMENT 3 - PHYSICAL CLOCK SYNCHRONIZATION
+    // =========================================================
+
+    /** Cristian's algorithm: the station asks the GPS time server for the time. */
+    public Map<String, Object> clockCristian(String name) {
+        return action(() -> {
+            RailwayStation s = activeStation(name);
+            ClockSync.CristianResult r = ClockSync.cristian(s, "GPS-TIME-SERVER",
+                    PhysicalClock.reference(), 20 + random.nextInt(30), 20 + random.nextInt(30));
+            s.printEvent(String.format("CLOCK SYNC (Cristian) with GPS time server: RTT %d ms → "
+                    + "adjusted %+.0f ms (±%.0f ms)", r.roundTripMs(), r.adjustmentMs(), r.errorBoundMs()));
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("algorithm", "Cristian");
+            result.put("result", r);
+            result.put("skewMs", Math.round(ClockSync.skew(stations)));
+            remember("clock", result);
+            return result;
+        });
+    }
+
+    /** Berkeley algorithm, run by the coordinator over all running stations. */
+    public Map<String, Object> clockBerkeley() {
+        return action(() -> {
+            RailwayStation master = stations.stream()
+                    .filter(s -> s.isCoordinator() && s.isActive()).findFirst()
+                    .orElseThrow(() -> new ActionException(
+                            "The coordinator is offline: run an election first"));
+            ClockSync.BerkeleyResult r = ClockSync.berkeley(master, stations, 2000, 15);
+            master.printEvent(String.format("BERKELEY round: polled %d clocks, average offset %+.0f ms"
+                    + " → corrections sent", r.readings().size(), r.averageOffsetMs()));
+            for (ClockSync.BerkeleyReading reading : r.readings()) {
+                station(reading.station()).printEvent(String.format("CLOCK ADJUST %+.0f ms (Berkeley%s)",
+                        reading.adjustmentMs(), reading.included() ? "" : ", excluded from average"));
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("algorithm", "Berkeley");
+            result.put("result", r);
+            result.put("skewMs", Math.round(r.skewAfterMs()));
+            remember("clock", result);
+            return result;
+        });
+    }
+
+    /** Gives every clock a new random error so synchronization can be shown again. */
+    public Map<String, Object> clockDisturb() {
+        return action(() -> {
+            int faulty = random.nextInt(stations.size());
+            for (int i = 0; i < stations.size(); i++) {
+                double offset = i == faulty
+                        ? (random.nextBoolean() ? 1 : -1) * (2600 + random.nextInt(1500))
+                        : random.nextInt(2400) - 1200;
+                stations.get(i).getPhysicalClock().setOffset(offset);
+            }
+            long skew = Math.round(ClockSync.skew(stations));
+            Terminal.line("⚠ Station clocks disturbed: skew is now " + skew + " ms");
+            return Map.of("message", "Clocks disturbed: skew " + skew + " ms");
+        });
     }
 
     // =========================================================
@@ -311,6 +494,7 @@ public final class RailwaySystem {
             String name = t.getName();
             String group = name.endsWith("-worker") ? "Station workers"
                     : name.startsWith("http-") ? "Web server (request handlers)"
+                    : name.startsWith("RMI ") ? "Java RMI (remote calls)"
                     : name.contains("Executor task launch") || name.contains("dispatcher")
                             || name.contains("spark") || name.contains("Spark") ? "Apache Spark"
                     : name.equals("main") ? "Main" : "JVM / other";
@@ -602,7 +786,7 @@ public final class RailwaySystem {
             result.put("processing", processing);
             result.put("commits", commits);
             result.put("elapsedMs", elapsedMs);
-            result.put("serialEstimateMs", results.size() * 200);
+            result.put("serialEstimateMs", results.size() * RailwayStation.TRAIN_PROCESSING_TIME_MS);
             result.put("counts", loadBalancer.getAssignmentCounts());
             remember("dispatch", result);
             return result;
@@ -861,7 +1045,11 @@ public final class RailwaySystem {
     private Map<String, Object> action(Action action) {
         synchronized (lock) {
             long seq = EventFeed.lastSeq();
-            return withLogs(new LinkedHashMap<>(action.run()), seq);
+            try {
+                return withLogs(new LinkedHashMap<>(action.run()), seq);
+            } finally {
+                syncRmi();
+            }
         }
     }
 

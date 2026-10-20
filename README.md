@@ -7,9 +7,9 @@ Four railway stations (STATION-01 … STATION-04) coordinating as a distributed 
 
 | Experiment | Topic | Where |
 |---|---|---|
-| 1 | Client-server / RPC (web dashboard calls stations through a JSON-RPC style API) | `RailwayWebServer`, `RailwaySystem` |
-| 2 | Multithreading: server thread pool, station worker threads | `RailwayWebServer`, `RailwayStation` |
-| 3 | Lamport logical clocks | `RailwayStation` |
+| 1 | Client-server communication with Java RMI: stations are remote objects in an RMI registry, called from a separate client JVM | `StationRemote`, `StationRmiServer`, `StationRmiClient`, `RailwayRmiDemo` |
+| 2 | Multithreading: concurrent station threads, a thread-pool server, synchronization vs race conditions | `RailwayMultithreadingDemo`, `RailwayWebServer`, `RailwayStation` |
+| 3 | Clock synchronization: physical (Cristian, Berkeley) and logical (Lamport) | `PhysicalClock`, `ClockSync`, `RailwayClockSyncDemo`, `RailwayStation` |
 | 4 | Bully + Ring election, heartbeats | `RailwayStation`, `Main` |
 | 5 | Data consistency + primary-backup replication | `ReplicationManager`, `TrackStateReplica` |
 | 6 | Health-aware Round-Robin load balancing | `LoadBalancer`, `TrainRequest` |
@@ -43,11 +43,11 @@ part of normal operation; every button calls the real Java code:
 | Network | Animated map: trains, signals, heartbeats, replication packets; station inspector; Autopilot | replication, heartbeats, Lamport clocks |
 | Dispatch | Round-robin routing wheel, controller worker threads, signal box | load balancing, multithreading |
 | Resilience | Incidents, heartbeat monitor, automatic failover, mirror integrity, request journal, elections | fault tolerance, consistency, Bully/Ring |
-| Timeline | Causal timeline drawn from real events by logical time | Lamport clocks |
+| Timeline | Causal timeline drawn from real events by logical time; live station clocks with Cristian and Berkeley synchronization | Lamport clocks, physical clock sync |
 | Insights | Traffic analytics pipeline and track heat map | MapReduce on Apache Spark |
 | Fleet Sync | Live state pushed to a compute cluster, animated | MPI Broadcast / Scatter / Gather |
 | Route Planner | Two-leg routes on a junction graph, cluster scaling chart | parallel matrix multiplication (MPI) |
-| System | Station API explorer, load test, live threads | RPC / client-server, thread pool |
+| System | Station API explorer (calls go through Java RMI), load test, live threads | RPC / Java RMI, thread pool |
 
 The Logs button opens the backend's live console output.
 
@@ -57,7 +57,23 @@ The Logs button opens the backend's live console output.
 
 ## Console demonstrations
 
-Experiments 4–8:
+Experiments 1, 2 and 3 (one program each):
+
+```bash
+mvn -q compile exec:exec -Dmain.class=RailwayRmiDemo
+mvn -q compile exec:exec -Dmain.class=RailwayMultithreadingDemo
+mvn -q compile exec:exec -Dmain.class=RailwayClockSyncDemo
+```
+
+`RailwayRmiDemo` starts the RMI server and launches the client as a second JVM.
+To run them in two terminals (or on two machines) instead:
+
+```bash
+java -cp target/classes StationRmiServer 1099
+java -cp target/classes StationRmiClient 127.0.0.1 1099
+```
+
+Experiments 4–8 (one connected run):
 
 ```bash
 mvn -q compile exec:exec
@@ -70,9 +86,10 @@ java -jar %MPJ_HOME%\lib\starter.jar -np 4 -cp target\classes RailwayMpiCollecti
 java -jar %MPJ_HOME%\lib\starter.jar -np 4 -cp target\classes RailwayMatrixMultiplication
 ```
 
-On Windows, `run.cmd` (Experiments 4–8) and `run-mpi.cmd` (Experiments 9–10;
-`run-mpi.cmd 9` or `run-mpi.cmd 10` runs one) switch the console to UTF-8 first
-so that `→ ✓ ⚠ ✗` display correctly.
+On Windows, `run.cmd` (Experiments 4–8; `run.cmd 1`, `run.cmd 2`, `run.cmd 3`
+runs one of the first three, `run.cmd all` runs 1 to 8) and `run-mpi.cmd`
+(Experiments 9–10; `run-mpi.cmd 9` or `run-mpi.cmd 10` runs one) switch the
+console to UTF-8 first so that `→ ✓ ⚠ ✗` display correctly.
 
 Each station's event log is written to `logs/STATION-0X.log` and used as the
 MapReduce input.

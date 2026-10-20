@@ -469,3 +469,25 @@ body.logs-open #toasts { bottom: 336px; }
   .cols-2, .cols-3, .cols-4, .stations { grid-template-columns: 1fr; }
   .clock { display: none; }
 }
+
+/* ---------- station clocks (Timeline) ---------- */
+.clk-faces { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.clk-face { background: var(--panel-2); border: 1px solid var(--line); border-top: 3px solid var(--c, var(--line-2)); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.clk-face.skew { --c: var(--cyan); }
+.clk-name { font-size: 12px; color: var(--text-2); font-weight: 600; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.clk-time { font-size: 20px; font-weight: 700; margin: 4px 0 2px; letter-spacing: .5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clk-meta { font-size: 12px; display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+.clk-scale { position: relative; height: 128px; margin-top: 14px; }
+.clk-axis { position: absolute; left: 4%; right: 4%; top: 58px; height: 2px; background: linear-gradient(90deg, rgba(248,113,113,.5), rgba(148,163,184,.35) 30%, rgba(52,211,153,.7) 50%, rgba(148,163,184,.35) 70%, rgba(248,113,113,.5)); }
+.clk-zero { position: absolute; left: 50%; top: 6px; width: 2px; height: 96px; background: linear-gradient(transparent, var(--green) 20%, var(--green) 80%, transparent); opacity: .8; }
+.clk-zero span { position: absolute; top: -6px; left: 8px; font-size: 11px; color: var(--green); white-space: nowrap; }
+.clk-dot { position: absolute; top: 52px; left: 50%; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--c); box-shadow: 0 0 12px var(--c); border: 2px solid var(--bg); transition: left 1s cubic-bezier(.2,.8,.2,1), opacity .3s; }
+.clk-dot span { position: absolute; left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 700; color: var(--c); white-space: nowrap; }
+.clk-dot.r0 span { bottom: 16px; }
+.clk-dot.r1 span { top: 16px; }
+.clk-dot.r2 span { bottom: 32px; }
+.clk-dot.r3 span { top: 32px; }
+.clk-dot.off { opacity: .35; }
+.clk-ticks { position: absolute; left: 4%; right: 4%; bottom: 0; display: flex; justify-content: space-between; font-size: 10.5px; color: var(--dim); }
+.clk-steps { display: flex; gap: 10px 16px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+@media (max-width: 900px) { .clk-faces { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

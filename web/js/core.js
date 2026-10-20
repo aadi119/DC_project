@@ -118,6 +118,10 @@ function describe(e) {
     return { ic: '♛', c: 'c-gold', tx: `${who}: ${esc(m)}` };
   }
   if (t.startsWith('RPC station.getLamportClock')) return null; // load-test bursts stay out of the feed
+  if (t.startsWith('RMI ')) return { ic: '⇄', c: 'c-cyan', tx: `${who} answered a remote call ${esc(t.split(' ')[1])}` };
+  if (t.startsWith('CLOCK SYNC')) return { ic: '⏱', c: 'c-cyan', tx: `${who} synchronised its clock with GPS (${esc(t.split('→ ')[1] || '')})` };
+  if (t.startsWith('BERKELEY')) return { ic: '⏱', c: 'c-gold', tx: `${who} ran a Berkeley clock round` };
+  if (t.startsWith('CLOCK ADJUST')) return { ic: '⏱', c: 'c-grey', tx: `${who} adjusted its clock ${esc(t.split(' ')[2])} ms` };
   if (t.startsWith('RPC ')) return { ic: '⇄', c: 'c-cyan', tx: `${who} served ${esc(t.split(' ')[1])}` };
   if (t.startsWith('SEND')) return { ic: '✉', c: 'c-violet', tx: `${who} sent ${esc(t.replace('SEND ', ''))}` };
   if (t.startsWith('RECEIVE')) return { ic: '✉', c: 'c-violet', tx: `${who} received ${esc(t.split(' (')[0].replace('RECEIVE ', ''))}` };

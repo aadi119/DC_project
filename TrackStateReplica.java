@@ -32,7 +32,7 @@ public class TrackStateReplica {
     public static final String NO_TRAIN = "NONE";
 
     /** State of one railway track, optionally with the train on it. */
-    public record TrackStatus(String state, String trainId) {
+    public record TrackStatus(String state, String trainId) implements java.io.Serializable {
 
         public static TrackStatus clear() {
             return new TrackStatus(CLEAR, NO_TRAIN);

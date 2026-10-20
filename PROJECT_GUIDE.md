@@ -225,7 +225,7 @@ All POST bodies are JSON. All responses are JSON.
 | POST | `/api/stations/{STATION-0X}/fail` | – | Crash a station |
 | POST | `/api/stations/{STATION-0X}/recover` | – | Recover (auto-resync if it held a replica) |
 | POST | `/api/stations/{STATION-0X}/overload` | – | Toggle overloaded |
-| POST | `/api/heartbeat` | – | Every station reports alive / no response |
+| POST | `/api/heartbeat` | – | The coordinator (or lowest live station) sends a heartbeat to every station; returns `monitor` and `alive` |
 | POST | `/api/rpc` | `{method, station, id}` | JSON-RPC style call: `station.ping`, `station.getLamportClock`, `station.getTrackState`, `cluster.getCoordinator`, `replication.getPrimary` |
 | POST | `/api/lamport/local` | `{station, label}` | Local event (L = L + 1) |
 | POST | `/api/lamport/message` | `{from, to, label}` | Send + receive (receive rule shown) |

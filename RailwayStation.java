@@ -15,7 +15,7 @@ public class RailwayStation {
 
     // Experiment 6: simulated (fixed, deterministic) time a station
     // needs to prepare a route and signals for one train request
-    private static final long TRAIN_PROCESSING_TIME_MS = 200;
+    public static final long TRAIN_PROCESSING_TIME_MS = 200;
 
     private static final DateTimeFormatter timeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
@@ -35,6 +35,13 @@ public class RailwayStation {
 
     private final Object clockLock = new Object();
 
+    // Experiment 3: the station's physical clock. Every station starts with
+    // a different offset and drift, as real hardware clocks do.
+    private static final double[] INITIAL_OFFSET_MS = {0, 850, -420, 3600, 120};
+    private static final double[] DRIFT_PPM = {0, 40, -25, 60, 10};
+
+    private final PhysicalClock physicalClock;
+
     // Experiment 5: every station holds a replica of the railway track state
     private final TrackStateReplica replica = new TrackStateReplica();
 
@@ -51,6 +58,8 @@ public class RailwayStation {
         this.stationId = stationId;
         this.active = true;
         this.coordinator = false;
+        int slot = stationId >= 1 && stationId < INITIAL_OFFSET_MS.length ? stationId : 0;
+        this.physicalClock = new PhysicalClock(INITIAL_OFFSET_MS[slot], DRIFT_PPM[slot]);
     }
 
     // =========================================================
@@ -87,6 +96,10 @@ public class RailwayStation {
 
     public TrackStateReplica getReplica() {
         return replica;
+    }
+
+    public PhysicalClock getPhysicalClock() {
+        return physicalClock;
     }
 
     @Override

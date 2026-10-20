@@ -494,7 +494,7 @@ public class Main {
 
         Terminal.blank();
         Terminal.line("Processed " + results.size() + " requests in ~" + elapsedMs
-                + " ms (one station alone would need ~" + results.size() * 200 + " ms)");
+                + " ms (one station alone would need ~" + results.size() * RailwayStation.TRAIN_PROCESSING_TIME_MS + " ms)");
 
         // ---------------- COMMIT + REPLICATION ----------------
         Terminal.section("PRIMARY " + primary.getStationName()
