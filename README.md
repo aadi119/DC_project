@@ -50,7 +50,9 @@ part of normal operation; every button calls the real Java code:
 | Route Planner | Two-leg routes on a junction graph, cluster scaling chart | parallel matrix multiplication (MPI) |
 | System | Station API explorer (calls go through Java RMI), load test, live threads | RPC / Java RMI, thread pool |
 
-The Logs button opens the backend's live console output.
+The Logs button opens the backend's live console output. The **Tour** button walks
+through every screen, highlights where each concept is at work and explains it
+(arrow keys to move, Esc to close): handy for a viva or demo.
 
 - `RailwaySystem` holds the live system and offers one method per action.
 - `RailwayWebServer` serves the site in `web/` and the JSON API under `/api/`.

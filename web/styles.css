@@ -510,3 +510,13 @@ body.logs-open #toasts { bottom: 336px; }
 .pt-link:hover line:last-of-type { stroke-width: 4; }
 .pt-alert { border: 1px solid rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); color: var(--text); padding: 10px 12px; border-radius: 10px; font-size: 13px; }
 .pt-note { border: 1px solid var(--line-2); background: var(--panel-2); padding: 10px 12px; border-radius: 10px; font-size: 13px; color: var(--text-2); }
+
+/* ---------- guided tour ---------- */
+.tour { position: fixed; inset: 0; z-index: 90; display: none; pointer-events: none; }
+.tour.on { display: block; }
+.tour-spot { position: fixed; border-radius: 14px; box-shadow: 0 0 0 9999px rgba(2, 6, 14, 0.72), 0 0 0 2px var(--cyan), 0 0 30px rgba(34, 211, 238, 0.45); transition: all .35s cubic-bezier(.2,.8,.2,1); pointer-events: none; }
+.tour-card { position: fixed; pointer-events: auto; background: var(--panel-solid); border: 1px solid rgba(34, 211, 238, 0.45); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); transition: top .35s, left .35s; }
+.tour-card h3 { margin: 2px 0 6px; font-size: 16px; }
+.tour-card p { margin: 0 0 12px; color: var(--text-2); font-size: 13.5px; line-height: 1.55; }
+.tour-step { font-size: 11px; letter-spacing: 1.5px; color: var(--cyan); font-weight: 700; }
+.tour-actions { display: flex; gap: 8px; align-items: center; }
