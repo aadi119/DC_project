@@ -13,9 +13,9 @@ experiment is implemented in Java on top of the same running system:
 
 | # | Concept | Main classes |
 |---|---|---|
-| 1 | Client-server / RPC | `RailwayWebServer`, `RailwaySystem.rpc()` |
-| 2 | Multithreading | station worker threads (`RailwayStation`), server thread pool |
-| 3 | Lamport logical clocks | `RailwayStation` (every event has `L=…`) |
+| 1 | Client-server with Java RMI | `StationRemote`, `StationRmiServer`, `StationRmiClient`, `RailwayRmiDemo`, `RailwaySystem.rpc()` |
+| 2 | Multithreading | `RailwayMultithreadingDemo`, station worker threads, server thread pool |
+| 3 | Clock synchronization: Cristian, Berkeley, Lamport (+ vector clocks) | `PhysicalClock`, `ClockSync`, `RailwayClockSyncDemo`, `RailwayStation` |
 | 4 | Leader election (Bully + Ring) | `RailwayStation.bullyElection / ringElection` |
 | 5 | Data consistency + replication | `ReplicationManager`, `TrackStateReplica` |
 | 6 | Load balancing (health-aware round-robin) | `LoadBalancer`, `TrainRequest` |
@@ -24,9 +24,14 @@ experiment is implemented in Java on top of the same running system:
 | 9 | MPI Broadcast / Scatter / Gather | `RailwayMpiCollectives`, `MpiStations` |
 | 10 | Parallel matrix multiplication (MPI) | `RailwayMatrixMultiplication`, `MpiStations` |
 
+Beyond the syllabus: distributed mutual exclusion (`RicartAgrawala`), term
+numbers + network partitions (`NetworkLinks`, `ReplicationManager.staleWrite`),
+vector clocks, live push updates (`LiveStream`), a timetable and a guided tour.
+
 There are **three ways to run it**:
 
-1. **Console demo**: Experiments 4–8 in sequence (`Main`), printed to the terminal.
+1. **Console demos**: Experiments 1, 2, 3 (one program each) and 4–8 in
+   sequence (`Main`), printed to the terminal.
 2. **MPI console demo**: Experiments 9–10 as real MPI processes.
 3. **Web dashboard "RailNet Ops"**: one live system covering all 10
    concepts, driven from the browser (`RailwayWebServer`).
@@ -49,7 +54,11 @@ must stay deterministic and unchanged (see §9).
 | What | Windows script | Plain command |
 |---|---|---|
 | Web dashboard (all 10) | `run-site.cmd` | `mvn -q compile exec:exec -Dmain.class=RailwayWebServer` |
+| Console demo, Exp 1 / 2 / 3 | `run.cmd 1` / `2` / `3` (`run.cmd all` = 1 → 8) | `mvn -q compile exec:exec -Dmain.class=RailwayRmiDemo` (`RailwayMultithreadingDemo`, `RailwayClockSyncDemo`) |
 | Console demo, Exp 4–8 | `run.cmd` | `mvn -q compile exec:exec` |
+| Mutual exclusion demo | – | `mvn -q compile exec:exec -Dmain.class=RicartAgrawala` |
+| Tests | – | `mvn test` (JUnit 5, sources in `test/`, also run by GitHub Actions) |
+| Docker (whole site) | – | `docker build -t railnet .` then `docker run -p 8080:8080 railnet` |
 | MPI demo, Exp 9–10 | `run-mpi.cmd` (`run-mpi.cmd 9` / `10` for one) | `java -jar %MPJ_HOME%\lib\starter.jar -np 4 -cp target\classes RailwayMpiCollectives` (or `RailwayMatrixMultiplication`) |
 
 The scripts run `chcp 65001` first so `→ ✓ ⚠ ✗` display correctly in the
@@ -63,6 +72,9 @@ Windows terminal.
 - It shuts itself down when the Maven process that launched it ends (Ctrl+C).
 - `run-site.cmd` kills any leftover `RailwayWebServer` Java process before
   starting.
+- It binds to `BIND_HOST` (default `127.0.0.1`; `0.0.0.0` in Docker).
+- It also starts a **Java RMI registry** on port 1099 (env `RMI_PORT`, next free
+  port if taken) and publishes every running station in it.
 
 ---
 
@@ -74,8 +86,19 @@ and only compiles `*.java` in the root.
 
 ```
 Main.java                      Console demo: Experiments 4 → 8 in sequence
-RailwayStation.java            A station: Lamport clock, replica, event log, worker
-                               thread, heartbeats, Bully/Ring elections (Exp 2–4)
+RailwayRmiDemo.java            Exp 1 console demo: RMI server + client launched in a second JVM
+StationRemote.java             Exp 1 remote interface (+ PingReply, MessageReply, Control)
+StationRmiServer.java          Exp 1 RMI registry, publish/withdraw stations, standalone server
+StationRmiClient.java          Exp 1 RMI client (standalone or launched by the demo)
+RailwayMultithreadingDemo.java Exp 2 console demo: station threads, thread-pool server, race condition
+PhysicalClock.java             Exp 3 drifting hardware clock (offset + drift ppm)
+ClockSync.java                 Exp 3 Cristian and Berkeley algorithms
+RailwayClockSyncDemo.java      Exp 3 console demo: physical vs Lamport vs vector clocks
+RicartAgrawala.java            Distributed mutual exclusion for the single-track tunnel (+ demo)
+NetworkLinks.java              Cut/restore links between stations (network partitions)
+LiveStream.java                Server-Sent Events push of state and events (/api/stream)
+RailwayStation.java            A station: Lamport + vector clock, physical clock, replica,
+                               event log, worker thread, heartbeats, Bully/Ring (Exp 2–4)
 TrackStateReplica.java         One versioned copy of the track state (+ applied request IDs)
 ReplicationManager.java        Primary-backup replication, consistency checks, failover,
                                resync, client requests with duplicate detection (Exp 5, 8)
@@ -95,7 +118,11 @@ web/index.html                 Site shell (top navigation, logs drawer)
 web/styles.css                 Dark "control room" design system
 web/js/core.js                 API helpers, state polling, routing, autopilot, self-healing
 web/js/network-map.js          Animated SVG network map (trains, signals, packets)
-web/js/pages.js                The eight screens + their button handlers
+web/js/pages.js                The ten screens + their button handlers
+web/js/tour.js                 Guided tour (Tour button)
+test/                          JUnit 5 tests (mvn test)
+Dockerfile, .dockerignore      Container image with JDK 21, Spark and MPJ Express
+.github/workflows/tests.yml    CI: mvn test on every push
 pom.xml                        Maven build (Spark, Gson, MPJ system jar, exec plugin)
 log4j2.properties              Silences Spark's internal logging
 lib/mpj.jar                    MPJ Express API jar (compile only)
@@ -115,6 +142,12 @@ Generated and ignored: `target/`, `logs/` (station event logs written for Spark)
   - `active` (crashed stations are inactive), `coordinator`, `overloaded` flags,
   - a **Lamport clock** (`printEvent` = local event, `sendLamportTimestamp`,
     `receiveLamportTimestamp` / `printReceivedEvent` = receive rule),
+  - a **vector clock** ticked together with it; `vectorAt(lamport)` gives the
+    vector of any of the station's events, and station-to-station messages
+    pass the sender's vector to the receive methods,
+  - a **physical clock** (`getPhysicalClock()`, offset/drift per station ID),
+  - optional `NetworkLinks` (`setLinks`): a cut link drops replication,
+    state transfer and heartbeats between the two stations,
   - its own **replica** (`TrackStateReplica`),
   - its own **event log** (`recordEvent`, exported to `logs/STATION-0X.log`),
   - a single **worker thread** for train requests (`submitTrainRequest`).
@@ -143,6 +176,22 @@ flag is set on the new primary.
 Note that in the web dashboard, "coordinator" (chosen by Bully/Ring elections)
 and "primary/control centre" (chosen by failover) are separate roles that
 usually coincide.
+
+### Terms and network partitions
+- `ReplicationManager` keeps a **term**, +1 at every failover; every replica
+  remembers the highest term seen and rejects updates from an older term
+  (`TrackStateReplica.StaleTermException`).
+- If the replaced primary is still running (partition, not crash) it becomes
+  `getDeposed()`. `staleWrite()` lets it write with its old term: replicas reject
+  it, it learns the new term, steps down and is resynchronised (a divergent
+  replica is replaced even if its version is not lower).
+- The term is not printed in the console demos, so their output is unchanged.
+
+### Mutual exclusion (Ricart–Agrawala)
+`new RicartAgrawala(section, participants, holdMs).contend(requests)`: each
+request runs on its own thread, messages go through a scheduled executor with
+random 40–120 ms delays and update Lamport/vector clocks. Returns every
+message (sent/delivered times), each passage and whether mutual exclusion held.
 
 ### Load balancing
 Circular order 01 → 02 → 03 → 04. For each request the balancer starts at its
@@ -226,7 +275,7 @@ All POST bodies are JSON. All responses are JSON.
 | POST | `/api/stations/{STATION-0X}/recover` | – | Recover (auto-resync if it held a replica) |
 | POST | `/api/stations/{STATION-0X}/overload` | – | Toggle overloaded |
 | POST | `/api/heartbeat` | – | The coordinator (or lowest live station) sends a heartbeat to every station; returns `monitor` and `alive` |
-| POST | `/api/rpc` | `{method, station, id}` | JSON-RPC style call: `station.ping`, `station.getLamportClock`, `station.getTrackState`, `cluster.getCoordinator`, `replication.getPrimary` |
+| POST | `/api/rpc` | `{method, station, id}` | JSON-RPC style call: `station.*` methods go through the **Java RMI** stub (`transport`, `endpoint` in the reply); also `cluster.getCoordinator`, `replication.getPrimary` |
 | POST | `/api/lamport/local` | `{station, label}` | Local event (L = L + 1) |
 | POST | `/api/lamport/message` | `{from, to, label}` | Send + receive (receive rule shown) |
 | POST | `/api/election` | `{algorithm: "bully" \| "ring"}` | Run an election among live stations |
@@ -240,6 +289,15 @@ All POST bodies are JSON. All responses are JSON.
 | POST | `/api/fault/retry` | – | Client retries unanswered requests (same IDs) |
 | POST | `/api/mpi/collectives` | `{processes: 1\|2\|4\|8}` | Run Exp 9 with the live state |
 | POST | `/api/mpi/matrix` | `{processes: 1..8, n: 60..1600}` | Run Exp 10 |
+| GET | `/api/stream` | – | Server-Sent Events: `state` (on change) and `feed` (new entries) |
+| POST | `/api/clocks/cristian` | `{station}` | Cristian sync of one station with the GPS time server |
+| POST | `/api/clocks/berkeley` | – | Berkeley round run by the coordinator |
+| POST | `/api/clocks/disturb` | – | Give every physical clock a new random error |
+| POST | `/api/section/request` | `{requests: [{station, train?}]}` | Ricart–Agrawala contest for Hillcrest Tunnel |
+| POST | `/api/network/link` | `{a, b}` | Cut or restore the link between two stations |
+| POST | `/api/network/isolate` | `{station?}` | Cut every link of a station (default: the primary) |
+| POST | `/api/network/heal` | – | Restore all links |
+| POST | `/api/network/stale-write` | – | The deposed primary writes with its old term |
 
 `/api/state` shape (abridged):
 
@@ -258,8 +316,13 @@ All POST bodies are JSON. All responses are JSON.
 }
 ```
 
+Newer fields: per station `vector`, `term`, `deposed`, `clockOffsetMs`,
+`driftPpm`, `rmi` (URL or null); top level `term`, `deposed`, `cutLinks`,
+`clockSkewMs`, `serverTimeMs`, `rmiPort`, `timetable {summary, journeys}`;
+`results` may also hold `clock`, `section`, `staleWrite`.
+
 `role` is `PRIMARY`, `BACKUP` or `NONE`. Event-feed entries look like
-`{seq, kind: "station"|"console", time, station, lamport, text}`.
+`{seq, kind: "station"|"console", time, station, lamport, vector, text}`.
 
 ### Adding a backend action
 1. Add a method to `RailwaySystem` that wraps its work in `action(() -> { … return Map.of(...); })`.
@@ -288,16 +351,19 @@ backup = **mirror**, no replica = **standby**, overloaded = **busy**.
 |---|---|---|---|
 | `network` | Network | Animated map, station inspector, live activity, metrics, Rush hour, Simulate incident | state, dispatch, stations/*, rpc |
 | `dispatch` | Dispatch | Routing wheel, controller load, worker-thread lanes, signal box | dispatch, stations/*/overload |
-| `resilience` | Resilience | Self-healing toggle, incidents, heartbeat monitor, mirror integrity, replication trace, request journal, election lab | fault/*, replication/*, election |
-| `timeline` | Timeline | Causal timeline by Lamport time with message arrows, clocks, total order | lamport/*, events |
+| `resilience` | Resilience | Self-healing toggle, incidents, heartbeat monitor, mirror integrity, replication trace, request journal, network partition + terms, election lab | fault/*, replication/*, network/*, election |
+| `section` | Tunnel | Ricart–Agrawala contest for the single-track tunnel, animated replay | section/request |
+| `timetable` | Timetable | Planned vs actual time of each movement, delays, Markdown session report | state.timetable |
+| `timeline` | Timeline | Causal timeline (click an event: before / after / concurrent by vector clocks), station clocks with Cristian / Berkeley | lamport/*, clocks/*, events |
 | `insights` | Insights | Spark pipeline, track heat map, charts, reconciliation | analytics |
 | `fleet` | Fleet Sync | Animated Broadcast → Scatter → Gather on the cluster | mpi/collectives |
 | `routes` | Route Planner | Junction graph + clickable 2-leg route matrix, cluster scaling chart | mpi/matrix |
 | `system` | System | API explorer, load test across server threads, live threads | rpc, threads |
 
 ### `core.js` — runtime
-- `App.state` / `App.prev`: the latest and previous `/api/state`. `refresh()`
-  polls every 1.4 s, together with `pollEvents()` (feed + logs drawer).
+- `App.state` / `App.prev`: the latest and previous `/api/state`. Updates
+  arrive by **Server-Sent Events** (`connectLive()` → `applyState` / `ingest`);
+  while the stream is down, `refresh()` + `pollEvents()` poll every 1.4 s.
 - `api(path, body)`: **GET if `body` is undefined, POST otherwise.** Always
   pass `{}` for POST endpoints without a body (forgetting this caused a real
   bug: "Unknown endpoint").
@@ -327,6 +393,10 @@ diagonal). `update(state, prev, selected)` diffs states:
 It also exposes `dispatchTo(assignments)`, `packet()` and `heatMapSVG(counts)`.
 
 ### Design system (`styles.css`)
+A theme button switches `data-theme="light"` on `<html>` (saved in localStorage);
+in light mode diagram containers stay dark "screens". Keyboard: elements that act
+as buttons but are not `<button>` get `role="button" tabindex="0"`; Enter/Space
+activates them (core.js).
 Dark theme tokens on `:root` (`--cyan` accent, `--violet`, `--green`, `--amber`, `--red`);
 building blocks `.panel`, `.metric(s)`, `.chip c-*`, `.btn primary|violet|danger|success|warn`,
 `.feed`, `.signal-box`, `.lanes`, `.stage-area`/`.node`/`.flyer` (Fleet Sync).
@@ -367,7 +437,7 @@ Layout grids: `.grid` + `.cols-2|3|4`, `.main-side`, `.side-main`, `.wide-left`.
 
 ## 9. Testing checklist (do this after changes)
 
-1. Build: `mvn -q compile`.
+1. Build and tests: `mvn -q compile` and `mvn test` (all green).
 2. **Console output must not change.** Save the old output, run
    `mvn -q compile exec:exec > new.txt`, and diff after stripping timestamps,
    e.g. `sed -E 's/^\[[0-9:.]+\]//; s/[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}//g; s/~[0-9]+ ms//'`.
@@ -377,7 +447,8 @@ Layout grids: `.grid` + `.cols-2|3|4`, `.main-side`, `.side-main`, `.wide-left`.
 4. Web: start with `NO_BROWSER=1` (use `PORT=8090` if 8080 is busy), open each
    screen, use its buttons, and check the browser console. Quick API check:
    `curl -s localhost:8080/api/state`.
-5. JS syntax: `node --check web/js/core.js` (and the other two files).
+5. JS syntax: `node --check web/js/core.js` (and the other files in `web/js`).
+6. Experiments 1–3: `run.cmd 1`, `run.cmd 2`, `run.cmd 3` finish with "COMPLETED".
 
 ---
 
@@ -401,5 +472,9 @@ Layout grids: `.grid` + `.cols-2|3|4`, `.main-side`, `.side-main`, `.wide-left`.
   element's bounding box makes perfectly horizontal or vertical lines
   disappear. Use `filterUnits="userSpaceOnUse"` with an explicit region.
 - **Do not** put mutable `static` fields in MPI programs (ranks share one JVM in multicore mode).
+- **Stale Maven build**: if `mvn test` reports "cannot find symbol" for classes
+  that exist, run `mvn clean test` once.
+- **Browser extensions** can inject elements into screenshots taken with a
+  local browser (e.g. a screen-recorder toolbar); remove them before capturing.
 - Every git commit for this repository is authored by the repository user; do
   not add AI co-author trailers.
