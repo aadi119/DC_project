@@ -48,11 +48,20 @@
             <scope>system</scope>
             <systemPath>${project.basedir}/lib/mpj.jar</systemPath>
         </dependency>
+
+        <!-- Automated tests (mvn test), sources in test/ -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <!-- The Java sources live in the repository root (as in Experiments 1-4). -->
         <sourceDirectory>${project.basedir}</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/test</testSourceDirectory>
 
         <resources>
             <!-- Quiet Spark logging configuration -->
@@ -74,6 +83,12 @@
                         <include>*.java</include>
                     </includes>
                 </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
             </plugin>
 
             <!--

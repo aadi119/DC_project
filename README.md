@@ -93,3 +93,17 @@ console to UTF-8 first so that `→ ✓ ⚠ ✗` display correctly.
 
 Each station's event log is written to `logs/STATION-0X.log` and used as the
 MapReduce input.
+
+## Automated tests
+
+```bash
+mvn test
+```
+
+JUnit 5 tests in `test/` check the core guarantees: replicas accept only the
+next version, the load balancer skips failed and overloaded stations and keeps
+the rotation fair, a station is declared failed after exactly 3 missed
+heartbeats, failover never promotes a stale replica, a retried request is not
+applied twice, Cristian and Berkeley reduce clock skew, Lamport's rules hold,
+RMI calls to a crashed station throw `RemoteException`, and shared state is
+thread-safe. GitHub Actions runs them on every push.
