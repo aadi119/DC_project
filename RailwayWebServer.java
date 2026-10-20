@@ -57,6 +57,8 @@ public final class RailwayWebServer {
         System.setOut(new PrintStream(new ConsoleCapture(terminal), true, StandardCharsets.UTF_8));
 
         int preferredPort = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+        // 127.0.0.1 = this computer only; BIND_HOST=0.0.0.0 inside a container
+        String bindHost = System.getenv().getOrDefault("BIND_HOST", "127.0.0.1");
         Path webRoot = Path.of("web").toAbsolutePath();
 
         stopWhenLauncherExits();
@@ -69,7 +71,7 @@ public final class RailwayWebServer {
         int port = preferredPort;
         for (; port < preferredPort + 10 && http == null; port++) {
             try {
-                http = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+                http = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
             } catch (java.net.BindException e) {
                 System.out.println("⚠ Port " + port + " is already in use, trying " + (port + 1));
             }

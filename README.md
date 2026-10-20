@@ -59,6 +59,17 @@ through every screen, highlights where each concept is at work and explains it
 - `RailwayWebServer` serves the site in `web/` and the JSON API under `/api/`.
 - `EventFeed` records every station event (with its Lamport time) and console line.
 
+## Run with Docker
+
+```bash
+docker build -t railnet .
+docker run -p 8080:8080 railnet
+```
+
+Then open http://localhost:8080. The image contains the compiled backend, the
+site, Apache Spark and the MPJ Express MPI runtime, so every screen works
+without installing Java, Maven or MPJ Express.
+
 ## Console demonstrations
 
 Experiments 1, 2 and 3 (one program each):
