@@ -83,7 +83,7 @@ page({
 });
 
 function stationCard(st) {
-  return `<div class="st-card ${st.active ? '' : 'down'} ${App.selected === st.name ? 'selected' : ''}" data-act="select" data-station="${st.name}">
+  return `<div class="st-card ${st.active ? '' : 'down'} ${App.selected === st.name ? 'selected' : ''}" data-act="select" data-station="${st.name}" role="button" tabindex="0" aria-label="Inspect ${esc(place(st.name))}">
     <span class="bar" style="background:${ST_COLOR[st.name]}"></span>
     <div class="top"><span class="dot"></span><span class="nm">${esc(place(st.name))}</span><span class="cd">${st.name}</span><span class="grow"></span>${st.coordinator ? '<span title="Coordinator" style="color:var(--gold)">♛</span>' : ''}</div>
     <div class="chips">${roleChip(st)}${st.overloaded ? chip('BUSY', 'c-amber') : ''}</div>
@@ -482,7 +482,7 @@ function partitionView(s) {
   for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
     const a = STATIONS[i]; const b = STATIONS[j]; const [ax, ay] = PT_POS[a]; const [bx, by] = PT_POS[b];
     const c = isCut(a, b);
-    g += `<g class="pt-link" data-a="${a}" data-b="${b}"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="transparent" stroke-width="16"/>
+    g += `<g class="pt-link" data-a="${a}" data-b="${b}" role="button" tabindex="0" aria-label="${c ? 'Restore' : 'Cut'} link ${esc(place(a))} – ${esc(place(b))}"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="transparent" stroke-width="16"/>
       <line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${c ? '#f87171' : 'rgba(34,211,238,.55)'}" stroke-width="${c ? 2 : 2.5}" ${c ? 'stroke-dasharray="6 5"' : ''}/>
       ${c ? `<text x="${(ax + bx) / 2}" y="${(ay + by) / 2 + 5}" text-anchor="middle" font-size="15" fill="#f87171">✂</text>` : ''}</g>`;
   }
@@ -880,7 +880,7 @@ function timelineSvg(events) {
         if (rel) ring = `<circle cx="${x(e.lamport)}" cy="${y(e.station)}" r="10" fill="none" stroke="${REL_COLOR[rel]}" stroke-width="2"${rel === 'concurrent' ? ' stroke-dasharray="3 2"' : ''}/>`;
       }
     }
-    svg += `${ring}<circle data-seq="${e.seq}" style="cursor:pointer" cx="${x(e.lamport)}" cy="${y(e.station)}" r="6" fill="${kind}" stroke="#060b16" stroke-width="2"${sel && e.seq !== sel.seq ? ' opacity=".55"' : ''}><title>λ${e.lamport} · V=${vec(e.vector)} · ${esc(place(e.station))} · ${esc(e.time)}\n${esc(e.text)}</title></circle>`;
+    svg += `${ring}<circle data-seq="${e.seq}" role="button" tabindex="0" style="cursor:pointer" cx="${x(e.lamport)}" cy="${y(e.station)}" r="6" fill="${kind}" stroke="#060b16" stroke-width="2"${sel && e.seq !== sel.seq ? ' opacity=".55"' : ''}><title>λ${e.lamport} · V=${vec(e.vector)} · ${esc(place(e.station))} · ${esc(e.time)}\n${esc(e.text)}</title></circle>`;
   }
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs><marker id="tlArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a78bfa"/></marker></defs>${svg}</svg>`;
 }
@@ -1169,7 +1169,7 @@ function matrixHtml(a, rankOf, si, sj) {
     html += `<span class="h" style="color:${RANK_COLOR[rankOf[i]]}">${J[i]}</span>`;
     for (let j = 0; j < n; j++) {
       const v = a.c[i][j];
-      html += `<span class="cell ${i === si && j === sj ? 'sel' : ''}" data-act="routeCell" data-i="${i}" data-j="${j}" style="background:${RANK_COLOR[rankOf[i]]}${Math.round(20 + (v / max) * 60).toString(16).padStart(2, '0')};color:#fff;border-color:${RANK_COLOR[rankOf[i]]}55">${v}</span>`;
+      html += `<span class="cell ${i === si && j === sj ? 'sel' : ''}" role="button" tabindex="0" data-act="routeCell" data-i="${i}" data-j="${j}" style="background:${RANK_COLOR[rankOf[i]]}${Math.round(20 + (v / max) * 60).toString(16).padStart(2, '0')};color:#fff;border-color:${RANK_COLOR[rankOf[i]]}55">${v}</span>`;
     }
   }
   return html + '</div>';

@@ -123,7 +123,7 @@ class NetworkMap {
   buildStation(name) {
     const [x, y] = GEO.stations[name];
     const above = GEO.labelAbove[name];
-    const g = svgEl('g', { class: 'stn alive', transform: `translate(${x},${y})` }, this.gStations);
+    const g = svgEl('g', { class: 'stn alive', transform: `translate(${x},${y})`, role: 'button', tabindex: 0, 'aria-label': `Inspect ${place(name)}` }, this.gStations);
     const halo = svgEl('circle', { r: 32, class: 'halo' }, g);
     const ring = svgEl('circle', { r: 40, class: 'ring' }, g);
     svgEl('circle', { r: 32, class: 'core' }, g);

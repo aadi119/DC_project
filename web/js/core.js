@@ -48,7 +48,7 @@ function view(sel) {
 }
 
 function chip(text, cls) { return `<span class="chip ${cls}">${esc(text)}</span>`; }
-function info(html) { return `<span class="info">i<span class="tip">${html}</span></span>`; }
+function info(html) { return `<span class="info" tabindex="0" role="button" aria-label="Explanation">i<span class="tip" role="tooltip">${html}</span></span>`; }
 function roleChip(s) {
   if (!s.active) return chip('OFFLINE', 'c-red');
   return s.role === 'PRIMARY' ? chip('CONTROL', 'c-cyan') : s.role === 'BACKUP' ? chip('MIRROR', 'c-violet') : chip('STANDBY', 'c-grey');
@@ -321,13 +321,32 @@ function navigate() {
   const next = PAGES.find((p) => p.id === id) || PAGES[0];
   if (App.page && App.page.leave) App.page.leave();
   App.page = next;
-  $$('.tab').forEach((a) => a.classList.toggle('active', a.dataset.id === next.id));
+  $$('.tab').forEach((a) => { a.classList.toggle('active', a.dataset.id === next.id); if (a.dataset.id === next.id) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   document.title = next.title + ' · RailNet Ops';
   $('#view').innerHTML = next.render();
   if (next.mount) next.mount();
   if (App.state && next.update) next.update();
   window.scrollTo(0, 0);
 }
+
+/* Keyboard: Enter or Space activates elements that act as buttons but are not <button>. */
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target.closest('[role="button"]');
+  if (!el || el.tagName === 'BUTTON' || el.classList.contains('info')) return;
+  e.preventDefault();
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+});
+
+/* Light / dark theme, remembered in this browser */
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('railnet-theme', theme); } catch { /* storage unavailable */ }
+  $('#theme-btn').setAttribute('aria-pressed', theme === 'light');
+}
+$('#theme-btn').setAttribute('aria-pressed', document.documentElement.dataset.theme === 'light');
+$('.skip-link').addEventListener('click', (e) => { e.preventDefault(); $('#view').focus(); });
+$('#theme-btn').addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'));
 
 /* Buttons declare data-act="name"; handlers live in ACTIONS (pages.js). */
 const ACTIONS = {};

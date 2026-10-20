@@ -2,12 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <script>
+    // apply the saved theme before the page paints (no flash)
+    try { const t = localStorage.getItem('railnet-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* storage unavailable */ }
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RailNet Ops</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#view">Skip to content</a>
   <header class="topnav">
     <a class="logo" href="#/network" aria-label="RailNet Ops home">
       <span class="logo-mark">
@@ -22,6 +27,9 @@
       <label class="switch" title="Keep traffic flowing automatically">
         <input type="checkbox" id="autopilot"><span class="track"><span class="knob"></span></span><span class="switch-label">Autopilot</span>
       </label>
+      <button class="icon-btn" id="theme-btn" title="Switch light / dark theme" aria-label="Switch light or dark theme">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.2a6.8 6.8 0 1 0 6.8 6.8A5.3 5.3 0 0 1 10 3.2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+      </button>
       <button class="icon-btn" id="tour-btn" title="Guided tour of the concepts">
         <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.2l5 2.8-5 2.8z" fill="currentColor"/></svg>
         <span>Tour</span>
@@ -33,7 +41,7 @@
     </div>
   </header>
 
-  <main id="view" class="view"></main>
+  <main id="view" class="view" tabindex="-1"></main>
 
   <section class="drawer" id="logs" aria-label="Live system logs">
     <div class="drawer-head">
