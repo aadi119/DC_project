@@ -61,6 +61,19 @@ public class ReplicationManager {
     // next client request but before the reply reaches the client
     private boolean crashBeforeNextReply = false;
 
+    // Term of the current primary: +1 at every failover
+    private long term = 1;
+
+    // A primary that was replaced while still running (cut off by a
+    // network partition). It still believes it is the primary.
+    private RailwayStation deposed;
+
+    /** What happened when a deposed primary tried to write. */
+    public record StaleWrite(String oldPrimary, long oldTerm, long currentTerm,
+                             List<String> rejectedBy, List<String> acceptedBy,
+                             List<String> unreachable, boolean steppedDown) {
+    }
+
     public ReplicationManager(RailwayStation primary, List<RailwayStation> backups) {
         this.primary = primary;
         this.backups = new ArrayList<>(backups);
@@ -68,6 +81,14 @@ public class ReplicationManager {
 
     public synchronized RailwayStation getPrimary() {
         return primary;
+    }
+
+    public synchronized long getTerm() {
+        return term;
+    }
+
+    public synchronized RailwayStation getDeposed() {
+        return deposed;
     }
 
     public synchronized List<RailwayStation> getBackups() {
@@ -85,6 +106,7 @@ public class ReplicationManager {
         TrackStateReplica primaryReplica = primary.getReplica();
         long version = primaryReplica.getVersion() + 1;
         primaryReplica.installSnapshot(initialState, version);
+        primaryReplica.observeTerm(term);
 
         int timestamp = primary.printEvent(
                 "PRIMARY initialises railway track state → Version " + version);
@@ -137,7 +159,7 @@ public class ReplicationManager {
 
         primaryReplica.applyUpdate(new TrackStateReplica.Update(
                 version, trackId, newStatus,
-                primary.getStationName(), updateTimestamp, requestId));
+                primary.getStationName(), updateTimestamp, requestId, term));
 
         primary.recordEvent(updateTimestamp, "TRACK_EVENT",
                 trackId, newStatus.state(), newStatus.trainId());
@@ -157,7 +179,7 @@ public class ReplicationManager {
 
             TrackStateReplica.Update message = new TrackStateReplica.Update(
                     version, trackId, newStatus,
-                    primary.getStationName(), sendTimestamp, requestId);
+                    primary.getStationName(), sendTimestamp, requestId, term);
 
             try {
                 TrackStateReplica.Ack ack = backup.receiveReplicationUpdate(message,
@@ -296,6 +318,65 @@ public class ReplicationManager {
         return new ClientReply(requestId, false, commit.version(), commit);
     }
 
+    /**
+     * The deposed primary, unaware that it was replaced, applies a write and
+     * tries to replicate it with its old term. Replicas that know the newer
+     * term reject it; the old primary learns the new term from the rejection,
+     * steps down and is resynchronised as a backup.
+     */
+    public synchronized StaleWrite staleWrite(String trackId, TrackStateReplica.TrackStatus status,
+                                              List<RailwayStation> stations) {
+
+        RailwayStation old = deposed;
+        if (old == null) {
+            throw new IllegalStateException("no deposed primary");
+        }
+        TrackStateReplica replica = old.getReplica();
+        long oldTerm = replica.getTerm();
+        long version = replica.getVersion() + 1;
+
+        int ts = old.printEvent("PRIMARY UPDATE (term " + oldTerm + ") v" + version + " : "
+                + trackId + " → " + status + "   [still believes it is primary]");
+        replica.applyUpdate(new TrackStateReplica.Update(version, trackId, status,
+                old.getStationName(), ts, null, oldTerm));
+
+        List<String> rejected = new ArrayList<>();
+        List<String> accepted = new ArrayList<>();
+        List<String> unreachable = new ArrayList<>();
+        long highest = oldTerm;
+
+        for (RailwayStation station : stations) {
+            if (station == old || !station.isActive()) {
+                continue;
+            }
+            int send = old.printEvent("REPLICATE (term " + oldTerm + ") v" + version
+                    + " → " + station.getStationName());
+            try {
+                station.receiveReplicationUpdate(new TrackStateReplica.Update(version, trackId,
+                        status, old.getStationName(), send, null, oldTerm), old.vectorAt(send));
+                accepted.add(station.getStationName());
+            } catch (TrackStateReplica.StaleTermException e) {
+                station.printEvent("REJECTED update from " + old.getStationName() + ": term "
+                        + oldTerm + " < current term " + e.getCurrentTerm());
+                rejected.add(station.getStationName());
+                highest = Math.max(highest, e.getCurrentTerm());
+            } catch (IllegalStateException e) {
+                unreachable.add(station.getStationName());
+            }
+        }
+
+        boolean steppedDown = highest > oldTerm;
+        if (steppedDown) {
+            replica.observeTerm(highest);
+            old.setCoordinator(false);
+            old.printEvent("STALE TERM " + oldTerm + " < " + highest
+                    + " → STEPPING DOWN: " + primary.getStationName() + " is the primary");
+            resynchronize(old);
+        }
+        return new StaleWrite(old.getStationName(), oldTerm, term, rejected, accepted,
+                unreachable, steppedDown);
+    }
+
     /** Fault injection: the primary crashes right after the next commit. */
     public synchronized void injectCrashBeforeNextReply() {
         crashBeforeNextReply = true;
@@ -362,7 +443,7 @@ public class ReplicationManager {
         Terminal.line("Candidate evaluation (only an up-to-date replica may become primary):");
 
         long latestVersion = stations.stream()
-                .filter(RailwayStation::isActive)
+                .filter(station -> station.isActive() && station != failedPrimary)
                 .mapToLong(station -> station.getReplica().getVersion())
                 .max()
                 .orElse(0);
@@ -376,6 +457,8 @@ public class ReplicationManager {
 
             if (!station.isActive()) {
                 verdict = "FAILED";
+            } else if (station == failedPrimary) {
+                verdict = "UNREACHABLE (suspected failed, may still be running)";
             } else if (latestVersion > 0 && version == latestVersion) {
                 verdict = "ACTIVE | Version " + version + " | ELIGIBLE";
                 eligible.add(station);
@@ -407,11 +490,19 @@ public class ReplicationManager {
         backups.remove(failedPrimary);
         primary = newPrimary;
 
+        // New leader, new term. A replaced primary that is still running
+        // (partition, not crash) keeps its old term: it is now deposed.
+        term++;
+        newPrimary.getReplica().observeTerm(term);
+        deposed = failedPrimary.isActive() ? failedPrimary : null;
+
         int timestamp = newPrimary.printEvent("ELECTION → "
                 + newPrimary.getStationName() + " PROMOTED TO PRIMARY");
 
         for (RailwayStation station : stations) {
-            if (station.isActive() && station != newPrimary) {
+            if (station.isActive() && station != newPrimary
+                    && station.canReach(newPrimary.getStationName())) {
+                station.getReplica().observeTerm(term);
                 station.printReceivedEvent(timestamp, newPrimary.vectorAt(timestamp),
                         "Received COORDINATOR message: new primary = "
                         + newPrimary.getStationName());
@@ -464,12 +555,21 @@ public class ReplicationManager {
                     + " update(s) while it was down");
             Terminal.blank();
             transferState(station);
+        } else if (!station.getReplica().snapshot().equals(primary.getReplica().snapshot())
+                || staleVersion > currentVersion) {
+            Terminal.line("⚠ DIVERGENT REPLICA: " + station.getStationName()
+                    + " holds writes that were never committed by the primary → replaced");
+            Terminal.blank();
+            transferState(station);
         } else {
             Terminal.line("Replica already up to date.");
         }
 
         if (!backups.contains(station)) {
             backups.add(station);
+        }
+        if (station == deposed) {
+            deposed = null;
         }
 
         Terminal.blank();
@@ -510,7 +610,7 @@ public class ReplicationManager {
         TrackStateReplica.Ack ack = target.receiveStateTransfer(
                 primaryReplica.snapshot(),
                 primaryReplica.appliedRequestsSnapshot(), version,
-                sendTimestamp, primary.vectorAt(sendTimestamp), primary.getStationName());
+                sendTimestamp, primary.vectorAt(sendTimestamp), term, primary.getStationName());
 
         primary.receiveLamportTimestamp(ack.lamportTimestamp(),
                 target.vectorAt(ack.lamportTimestamp()));

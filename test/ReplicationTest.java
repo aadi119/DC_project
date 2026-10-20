@@ -11,7 +11,7 @@ class ReplicationTest {
 
     private static TrackStateReplica.Update update(long version, String track) {
         return new TrackStateReplica.Update(version, track,
-                TrackStateReplica.TrackStatus.occupied("TRAIN-1"), "STATION-04", 1, null);
+                TrackStateReplica.TrackStatus.occupied("TRAIN-1"), "STATION-04", 1, null, 1);
     }
 
     @Test

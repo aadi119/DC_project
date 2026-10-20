@@ -118,6 +118,9 @@ function describe(e) {
     return { ic: '♛', c: 'c-gold', tx: `${who}: ${esc(m)}` };
   }
   if (t.startsWith('RPC station.getLamportClock')) return null; // load-test bursts stay out of the feed
+  if (t.startsWith('REJECTED update from')) return { ic: '⛔', c: 'c-green', tx: `${who} rejected a write with a stale term` };
+  if (t.startsWith('STALE TERM')) return { ic: '⇣', c: 'c-amber', tx: `${who} learned it was replaced and stepped down` };
+  if (t.includes('[still believes it is primary]')) return { ic: '⚠', c: 'c-amber', tx: `${who} wrote as if it were still the control centre` };
   if (t.startsWith('MUTEX ENTER')) return { ic: '🚆', c: 'c-green', tx: `${esc(t.split(' : ')[1].split(' ')[0])} entered Hillcrest Tunnel (granted by every station)` };
   if (t.startsWith('MUTEX REQUEST ')) return t.includes('→ all') ? { ic: '✋', c: 'c-amber', tx: `${who} asked every station for Hillcrest Tunnel` } : null;
   if (t.startsWith('MUTEX DEFER')) return { ic: '⏸', c: 'c-amber', tx: `${who} deferred its reply to ${esc(place(t.match(/STATION-\d+/)[0]))}` };

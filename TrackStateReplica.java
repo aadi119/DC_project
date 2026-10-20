@@ -21,6 +21,11 @@ import java.util.zip.CRC32;
  * All methods are synchronized: the replica may be read by the main
  * thread while station worker threads are running (Experiment 6).
  *
+ * TERM: every primary leads under a term number, increased at each failover.
+ * A replica remembers the highest term it has seen and refuses updates from
+ * an older term, so a deposed primary (cut off by a network partition, still
+ * believing it leads) cannot overwrite the new primary's data.
+ *
  * Experiment 8: the replica also remembers which client request IDs it has
  * applied. This table is replicated with the data, so after a failover the
  * new primary can recognise a retried request and not apply it twice.
@@ -61,7 +66,29 @@ public class TrackStateReplica {
                          TrackStatus newStatus,
                          String primaryName,
                          int lamportTimestamp,
-                         String requestId) {
+                         String requestId,
+                         long term) {
+    }
+
+    /** An update from a primary whose term is older than one this replica has seen. */
+    public static class StaleTermException extends IllegalStateException {
+
+        private final long messageTerm;
+        private final long currentTerm;
+
+        public StaleTermException(long messageTerm, long currentTerm) {
+            super("stale term " + messageTerm + " < current term " + currentTerm);
+            this.messageTerm = messageTerm;
+            this.currentTerm = currentTerm;
+        }
+
+        public long getMessageTerm() {
+            return messageTerm;
+        }
+
+        public long getCurrentTerm() {
+            return currentTerm;
+        }
     }
 
     /** Acknowledgement returned by a replica after applying a message. */
@@ -71,12 +98,22 @@ public class TrackStateReplica {
     // TreeMap → tracks are always listed in a stable order
     private final Map<String, TrackStatus> tracks = new TreeMap<>();
     private long version = 0;
+    private long term = 0;
 
     // Experiment 8: client request ID → version at which it was applied
     private final Map<String, Long> appliedRequests = new LinkedHashMap<>();
 
     public synchronized long getVersion() {
         return version;
+    }
+
+    public synchronized long getTerm() {
+        return term;
+    }
+
+    /** Learns about a (possibly newer) term. Terms never go back. */
+    public synchronized void observeTerm(long seenTerm) {
+        term = Math.max(term, seenTerm);
     }
 
     public synchronized TrackStatus get(String trackId) {
@@ -106,6 +143,10 @@ public class TrackStateReplica {
      */
     public synchronized long applyUpdate(Update update) {
 
+        if (update.term() < term) {
+            throw new StaleTermException(update.term(), term);
+        }
+
         if (update.version() != version + 1) {
             throw new IllegalStateException(
                     "out-of-order update: replica at version " + version
@@ -114,6 +155,7 @@ public class TrackStateReplica {
 
         tracks.put(update.trackId(), update.newStatus());
         version = update.version();
+        term = update.term();
 
         if (update.requestId() != null) {
             appliedRequests.put(update.requestId(), version);

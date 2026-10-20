@@ -330,14 +330,24 @@ page({
       </div>
     </div>
     <div class="panel mt">
+      <div class="panel-head"><h3>Network partition</h3><span class="sub">cut links between stations · terms stop a split brain</span>${info('A <b>network partition</b> cuts stations apart while they keep running. A cut-off control centre looks dead to the others, so they fail over, but it is alive and still <b>believes it leads</b>: two leaders = <b>split brain</b>.<br><br>Every leader works under a <b>term</b> number, increased at each failover, and every copy remembers the highest term it has seen. When the old leader writes with its old term, the copies <b>reject</b> it; it learns the new term, steps down and resynchronises.')}
+        <span class="right"><button class="btn sm danger" data-act="ptIsolate">Cut off control centre</button><button class="btn sm" data-act="rsDetect">Run health check</button><button class="btn sm success" data-act="ptHeal">Heal network</button><button class="btn sm warn" data-act="ptStale">Old leader writes</button></span></div>
+      <div class="grid cols-2"><div><svg viewBox="0 0 440 300" id="pt-svg" class="pt-svg"></svg><div class="dim" style="font-size:12px;text-align:center">click a link to cut or restore it</div></div><div id="pt-info"></div></div>
+    </div>
+    <div class="panel mt">
       <div class="panel-head"><h3>Coordinator election</h3><span class="sub">choose the junction coordinator among live stations</span>${info('<b>Bully:</b> a station that notices the coordinator is gone challenges every higher ID; the highest live station wins and announces itself.<br><b>Ring:</b> an election message travels round a logical ring collecting IDs; the highest becomes coordinator.<br>The control centre is chosen separately: only an up-to-date mirror may take that role.')}<span class="right"><button class="btn sm violet" data-act="elect" data-algo="bully">Run Bully election</button><button class="btn sm violet" data-act="elect" data-algo="ring">Run Ring election</button></span></div>
       <div class="grid cols-2"><div class="wheel" id="rs-ring"></div><div id="rs-messages" class="scroll" style="max-height:330px"></div></div>
     </div>`,
   mount() {
     $('#rs-heal').addEventListener('change', (e) => { App.autoHeal = e.target.checked; toast(App.autoHeal ? 'Self-healing on: failures are handled automatically' : 'Self-healing off: run the health check yourself'); });
     $('#rs-ring').innerHTML = ringSkeleton();
+    $('#pt-svg').addEventListener('click', async (ev) => {
+      const l = ev.target.closest('.pt-link');
+      if (l) await act(null, '/network/link', { a: l.dataset.a, b: l.dataset.b });
+    });
   },
   update() {
+    partitionView(App.state);
     const s = App.state; const c = s.client;
     const primary = station(s.primary);
     const synced = s.backups.map(station).filter((m) => m && m.active && m.version === primary.version).length;
@@ -428,6 +438,9 @@ function playElection(events) {
 }
 
 Object.assign(ACTIONS, {
+  ptIsolate: (b) => act(b, '/network/isolate', {}),
+  ptHeal: (b) => act(b, '/network/heal', {}),
+  ptStale: (b) => act(b, '/network/stale-write', {}, (d) => d.result.steppedDown ? `✓ Stale write rejected: ${place(d.result.oldPrimary)} stepped down` : '⚠ Nobody rejected it: the old leader is still isolated'),
   rsDetect: async (b) => {
     const d = await act(b, '/fault/detect', {}, (r) => (r.declaredFailed ? `⚠ ${place(r.target)} declared failed${r.newPrimary ? ` → ${place(r.newPrimary)} took over` : ''}` : `♥ ${place(r.target)} is healthy`));
   },
@@ -457,6 +470,52 @@ Object.assign(ACTIONS, {
     if (d) { local.electionEvents = d.events; App.page.update(); playElection(d.events); }
   },
 });
+
+
+/* ---------- network partition ---------- */
+const PT_POS = { 'STATION-01': [90, 70], 'STATION-02': [90, 232], 'STATION-03': [350, 70], 'STATION-04': [350, 232] };
+function partitionView(s) {
+  const cut = new Set(s.cutLinks.map(([a, b]) => a + '|' + b));
+  const isCut = (a, b) => cut.has(a < b ? a + '|' + b : b + '|' + a);
+  let g = '';
+  for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
+    const a = STATIONS[i]; const b = STATIONS[j]; const [ax, ay] = PT_POS[a]; const [bx, by] = PT_POS[b];
+    const c = isCut(a, b);
+    g += `<g class="pt-link" data-a="${a}" data-b="${b}"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="transparent" stroke-width="16"/>
+      <line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${c ? '#f87171' : 'rgba(34,211,238,.55)'}" stroke-width="${c ? 2 : 2.5}" ${c ? 'stroke-dasharray="6 5"' : ''}/>
+      ${c ? `<text x="${(ax + bx) / 2}" y="${(ay + by) / 2 + 5}" text-anchor="middle" font-size="15" fill="#f87171">✂</text>` : ''}</g>`;
+  }
+  for (const st of s.stations) {
+    const [x, y] = PT_POS[st.name];
+    const role = !st.active ? ['OFFLINE', '#f87171'] : st.deposed ? ['THINKS IT LEADS', '#fbbf24'] : st.role === 'PRIMARY' ? ['CONTROL', '#22d3ee'] : st.role === 'BACKUP' ? ['MIRROR', '#a78bfa'] : ['STANDBY', '#7487a5'];
+    g += `<circle cx="${x}" cy="${y}" r="27" fill="#0a1222" stroke="${ST_COLOR[st.name]}" stroke-width="3" ${st.deposed ? 'stroke-dasharray="5 3"' : ''}/>
+      <text x="${x}" y="${y + 5}" text-anchor="middle" font-size="13" font-weight="800" fill="${ST_COLOR[st.name]}">${code(st.name)}</text>
+      <text x="${x}" y="${y - 36}" text-anchor="middle" font-size="12" font-weight="700" fill="#e6edf8">${esc(place(st.name))}</text>
+      <text x="${x}" y="${y + 44}" text-anchor="middle" font-size="11" font-weight="700" fill="${role[1]}">${role[0]}</text>
+      <text x="${x}" y="${y + 58}" text-anchor="middle" font-size="10.5" font-family="Consolas" fill="#b4c2d8">term ${st.term} · v${st.version}</text>`;
+  }
+  view('#pt-svg').html = g;
+  const r = s.results.staleWrite;
+  const dep = s.deposed;
+  let info = '';
+  if (dep) {
+    info += `<div class="pt-alert"><b>⚠ Split-brain risk.</b> ${esc(place(dep))} still believes it is the control centre (term ${station(dep).term}), while ${esc(place(s.primary))} leads term ${s.term}. ${s.cutLinks.length ? 'Heal the network, then let the old leader write.' : 'Let the old leader write: the copies will reject its stale term.'}</div>`;
+  } else if (s.cutLinks.length) {
+    info += `<div class="pt-note">${s.cutLinks.length} link${s.cutLinks.length > 1 ? 's' : ''} cut. Stations on different sides cannot exchange heartbeats or updates. Run the health check to see who is suspected.</div>`;
+  } else {
+    info += `<div class="pt-note">All links up. Current term <b>${s.term}</b>, led by <b>${esc(place(s.primary))}</b>. Cut off the control centre, run the health check, heal, and let the old leader write.</div>`;
+  }
+  if (r) {
+    const x = r.result;
+    info += `<div class="mt-s"><div class="dim" style="font-size:11.5px;margin-bottom:4px">LAST WRITE BY A DEPOSED LEADER</div>
+      <div class="kv"><span>Old leader</span><b>${esc(place(x.oldPrimary))} · term ${x.oldTerm}</b></div>
+      <div class="kv"><span>Rejected by</span><b class="ok">${x.rejectedBy.map(place).join(', ') || '—'}</b></div>
+      <div class="kv"><span>Accepted by</span><b class="${x.acceptedBy.length ? 'bad' : ''}">${x.acceptedBy.map(place).join(', ') || 'nobody'}</b></div>
+      <div class="kv"><span>Unreachable</span><b>${x.unreachable.map(place).join(', ') || '—'}</b></div>
+      <div class="mt-s">${x.steppedDown ? chip(`✓ stale term ${x.oldTerm} < ${x.currentTerm}: stepped down and resynchronised`, 'c-green') : chip('⚠ still isolated: nobody told it about the new term', 'c-amber')}</div></div>`;
+  }
+  view('#pt-info').html = info;
+}
 
 /* =========================================================
    SECTION CONTROL (distributed mutual exclusion)

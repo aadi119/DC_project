@@ -65,6 +65,9 @@ public class RailwayStation {
     // Line format: lamport|station|EVENT_TYPE|field1|field2|field3
     private final List<String> eventLog = new ArrayList<>();
 
+    // Communication links (null = fully connected network)
+    private volatile NetworkLinks links;
+
     // Experiment 6: worker thread that processes train requests (the
     // multithreading idea of Experiment 2 applied to request handling)
     private ExecutorService worker;
@@ -116,6 +119,16 @@ public class RailwayStation {
 
     public PhysicalClock getPhysicalClock() {
         return physicalClock;
+    }
+
+    public void setLinks(NetworkLinks links) {
+        this.links = links;
+    }
+
+    /** False if a network partition cuts this station off from the other one. */
+    public boolean canReach(String otherStation) {
+        NetworkLinks current = links;
+        return current == null || current.connected(stationName, otherStation);
     }
 
     @Override
@@ -929,6 +942,10 @@ public class RailwayStation {
             throw new IllegalStateException(stationName + " is not responding");
         }
 
+        if (!canReach(update.primaryName())) {
+            throw new IllegalStateException(stationName + " unreachable (network partition)");
+        }
+
         int timestamp = receiveLamportTimestamp(update.lamportTimestamp(), senderVector);
         long version = replica.applyUpdate(update);
 
@@ -957,13 +974,30 @@ public class RailwayStation {
             int messageTimestamp,
             int[] senderVector,
             String primaryName) {
+        return receiveStateTransfer(snapshot, appliedRequests, version, messageTimestamp,
+                senderVector, 0, primaryName);
+    }
+
+    /** As above, with the primary's term. */
+    public TrackStateReplica.Ack receiveStateTransfer(
+            Map<String, TrackStateReplica.TrackStatus> snapshot,
+            Map<String, Long> appliedRequests,
+            long version,
+            int messageTimestamp,
+            int[] senderVector,
+            long term,
+            String primaryName) {
 
         if (!active) {
             throw new IllegalStateException(stationName + " is not responding");
         }
+        if (!canReach(primaryName)) {
+            throw new IllegalStateException(stationName + " unreachable (network partition)");
+        }
 
         int timestamp = receiveLamportTimestamp(messageTimestamp, senderVector);
         replica.installSnapshot(snapshot, appliedRequests, version);
+        replica.observeTerm(term);
 
         recordEvent(timestamp, "REPLICATION_EVENT",
                 "v" + version, "SNAPSHOT", primaryName);
@@ -983,7 +1017,7 @@ public class RailwayStation {
      */
     public boolean answerHeartbeat(int messageTimestamp, RailwayStation monitor) {
 
-        if (!active) {
+        if (!active || !canReach(monitor.getStationName())) {
             return false;
         }
 

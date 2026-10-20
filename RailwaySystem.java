@@ -57,6 +57,9 @@ public final class RailwaySystem {
 
     // Experiment 1: every station is also published as a Java RMI remote object
     private final StationRmiServer rmi;
+
+    // Communication links between stations (network partition simulator)
+    private volatile NetworkLinks links = new NetworkLinks();
     private final Random random = new Random();
 
     private int nextSequence;
@@ -124,6 +127,10 @@ public final class RailwaySystem {
                 stations.add(new RailwayStation(String.format("STATION-%02d", id), id));
             }
             station("STATION-04").setCoordinator(true);
+            links = new NetworkLinks();
+            for (RailwayStation s : stations) {
+                s.setLinks(links);
+            }
             if (rmi != null) {
                 for (RailwayStation s : stations) {
                     rmi.withdraw(s.getStationName());
@@ -184,6 +191,8 @@ public final class RailwaySystem {
             m.put("role", role);
             m.put("lamport", s.getLamportClock());
             m.put("vector", s.getVectorClock());
+            m.put("term", s.getReplica().getTerm());
+            m.put("deposed", s == replication.getDeposed());
             m.put("version", s.getReplica().getVersion());
             m.put("checksum", s.getReplica().checksum());
             m.put("events", s.getEventCount());
@@ -225,6 +234,10 @@ public final class RailwaySystem {
         state.put("nextInRotation", loadBalancer.nextInRotation());
         state.put("failovers", failovers);
         state.put("clockSkewMs", Math.round(ClockSync.skew(stations)));
+        state.put("term", replication.getTerm());
+        state.put("deposed", replication.getDeposed() == null ? null
+                : replication.getDeposed().getStationName());
+        state.put("cutLinks", links.cutLinks());
         state.put("serverTimeMs", System.currentTimeMillis());
         state.put("rmiPort", rmi == null ? null : rmi.getPort());
         state.put("client", clientInfo);
@@ -421,6 +434,78 @@ public final class RailwaySystem {
                     "version", s.getReplica().getVersion(),
                     "tracks", s.getReplica().snapshot());
         };
+    }
+
+    // =========================================================
+    // NETWORK PARTITIONS AND TERMS
+    // =========================================================
+
+    public Map<String, Object> toggleLink(String a, String b) {
+        return action(() -> {
+            station(a);
+            station(b);
+            if (a.equals(b)) {
+                throw new ActionException("Choose two different stations");
+            }
+            boolean nowCut = links.connected(a, b);
+            if (nowCut) {
+                links.cut(a, b);
+            } else {
+                links.restore(a, b);
+            }
+            Terminal.line((nowCut ? "✂ Link cut: " : "⟷ Link restored: ") + a + " ⟷ " + b);
+            return Map.of("message", (nowCut ? "Link cut between " : "Link restored between ") + a + " and " + b);
+        });
+    }
+
+    /** Cuts every link of one station (default: the primary). */
+    public Map<String, Object> isolate(String name) {
+        return action(() -> {
+            RailwayStation s = name == null || name.isBlank() ? replication.getPrimary() : station(name);
+            links.isolate(s.getStationName(), stations.stream().map(RailwayStation::getStationName).toList());
+            Terminal.line("✂ Network partition: " + s.getStationName()
+                    + " is cut off from every other station (but keeps running)");
+            return Map.of("message", s.getStationName() + " is cut off from the network");
+        });
+    }
+
+    public Map<String, Object> healNetwork() {
+        return action(() -> {
+            links.healAll();
+            Terminal.line("⟷ Network healed: every link restored");
+            RailwayStation deposed = replication.getDeposed();
+            return Map.of("message", deposed == null ? "Network healed"
+                    : "Network healed. " + deposed.getStationName() + " still believes it is primary (term "
+                    + deposed.getReplica().getTerm() + ")");
+        });
+    }
+
+    /** The deposed primary tries to write with its old term. */
+    public Map<String, Object> staleWrite() {
+        return action(() -> {
+            RailwayStation old = replication.getDeposed();
+            if (old == null) {
+                throw new ActionException("No deposed primary: cut off the control centre and run failure detection first");
+            }
+            if (!old.isActive()) {
+                throw new ActionException(old.getStationName() + " is down");
+            }
+            String track = TRACKS.stream()
+                    .filter(t -> !old.getReplica().get(t).isOccupied()).findFirst().orElse("TRACK-01");
+            Terminal.section("DEPOSED PRIMARY " + old.getStationName() + " WRITES WITH TERM "
+                    + old.getReplica().getTerm());
+            ReplicationManager.StaleWrite result = replication.staleWrite(track,
+                    TrackStateReplica.TrackStatus.occupied("TRAIN-" + nextTrainNumber++), stations);
+            Terminal.line(result.steppedDown()
+                    ? "✓ Stale write rejected (term " + result.oldTerm() + " < " + result.currentTerm()
+                            + "): " + old.getStationName() + " stepped down and resynchronised"
+                    : "⚠ No station rejected the write: " + old.getStationName()
+                            + " is still isolated (split brain risk)");
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("result", result);
+            remember("staleWrite", out);
+            return out;
+        });
     }
 
     // =========================================================

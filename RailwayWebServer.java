@@ -193,6 +193,10 @@ public final class RailwayWebServer {
                     orDefault(str(body, "label"), "local event"));
             case "/api/lamport/message" -> system.lamportMessage(str(body, "from"), str(body, "to"),
                     orDefault(str(body, "label"), "message"));
+            case "/api/network/link" -> system.toggleLink(str(body, "a"), str(body, "b"));
+            case "/api/network/isolate" -> system.isolate(str(body, "station"));
+            case "/api/network/heal" -> system.healNetwork();
+            case "/api/network/stale-write" -> system.staleWrite();
             case "/api/clocks/cristian" -> system.clockCristian(str(body, "station"));
             case "/api/clocks/berkeley" -> system.clockBerkeley();
             case "/api/clocks/disturb" -> system.clockDisturb();
