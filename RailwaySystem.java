@@ -630,6 +630,7 @@ public final class RailwaySystem {
             String group = name.endsWith("-worker") ? "Station workers"
                     : name.startsWith("http-") ? "Web server (request handlers)"
                     : name.startsWith("RMI ") ? "Java RMI (remote calls)"
+                    : name.equals("live-stream") ? "Live updates (SSE push)"
                     : name.contains("Executor task launch") || name.contains("dispatcher")
                             || name.contains("spark") || name.contains("Spark") ? "Apache Spark"
                     : name.equals("main") ? "Main" : "JVM / other";

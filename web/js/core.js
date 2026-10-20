@@ -144,14 +144,17 @@ function pushActivity(item) {
 
 /* ---------------- state & events ---------------- */
 
+function applyState(s) {
+  App.prev = App.state;
+  App.state = s;
+  setSync();
+  for (const fn of App.listeners) { try { fn(s, App.prev); } catch (e) { console.error(e); } }
+  if (App.page && App.page.update) App.page.update();
+}
+
 async function refresh() {
   try {
-    const s = await api('/state');
-    App.prev = App.state;
-    App.state = s;
-    setSync();
-    for (const fn of App.listeners) { try { fn(s, App.prev); } catch (e) { console.error(e); } }
-    if (App.page && App.page.update) App.page.update();
+    applyState(await api('/state'));
   } catch {
     const pill = $('#sync-pill');
     pill.className = 'sync-pill bad';
@@ -183,28 +186,49 @@ function logClass(line) {
 
 async function pollEvents() {
   try {
-    const data = await api('/events?since=' + App.lastSeq);
-    const body = logsBody();
-    let added = false;
-    for (const e of data.entries) {
-      if (e.kind === 'station') {
-        App.events.push(e);
-        const d = describe(e);
-        if (d) pushActivity({ ...d, time: e.time, lamport: e.lamport, station: e.station });
-      } else {
-        const span = document.createElement('span');
-        span.className = logClass(e.text);
-        span.textContent = e.text + '\n';
-        body.appendChild(span);
-        added = true;
-      }
-    }
-    if (App.events.length > 600) App.events.splice(0, App.events.length - 600);
-    while (body.childNodes.length > 2000) body.removeChild(body.firstChild);
-    if (added && $('#logs-follow').checked) body.scrollTop = body.scrollHeight;
-    App.lastSeq = data.lastSeq;
+    ingest(await api('/events?since=' + App.lastSeq));
   } catch { /* offline handled by refresh */ }
 }
+
+/** Adds new feed entries (from polling or the live stream), skipping ones already seen. */
+function ingest(data) {
+  if (data.lastSeq < App.lastSeq) App.lastSeq = 0; // server restarted: numbering starts again
+  const body = logsBody();
+  let added = false;
+  for (const e of data.entries) {
+    if (e.seq <= App.lastSeq) continue;
+    if (e.kind === 'station') {
+      App.events.push(e);
+      const d = describe(e);
+      if (d) pushActivity({ ...d, time: e.time, lamport: e.lamport, station: e.station });
+    } else {
+      const span = document.createElement('span');
+      span.className = logClass(e.text);
+      span.textContent = e.text + '\n';
+      body.appendChild(span);
+      added = true;
+    }
+  }
+  if (App.events.length > 600) App.events.splice(0, App.events.length - 600);
+  while (body.childNodes.length > 2000) body.removeChild(body.firstChild);
+  if (added && $('#logs-follow').checked) body.scrollTop = body.scrollHeight;
+  App.lastSeq = Math.max(App.lastSeq, data.lastSeq);
+}
+
+/* ---------------- live stream (Server-Sent Events) ----------------
+   The server pushes state changes and new events as they happen.
+   While the stream is connected, polling is skipped; if it drops,
+   polling takes over until the browser reconnects. */
+function connectLive() {
+  if (!window.EventSource) return;
+  const es = new EventSource('/api/stream');
+  App.live = es;
+  es.addEventListener('state', (m) => { App.liveAt = Date.now(); applyState(JSON.parse(m.data)); });
+  es.addEventListener('feed', (m) => { App.liveAt = Date.now(); ingest(JSON.parse(m.data)); });
+  es.onopen = () => { App.liveOpen = true; pollEvents(); };
+  es.onerror = () => { App.liveOpen = false; };
+}
+const liveHealthy = () => App.liveOpen && App.live && App.live.readyState === 1;
 
 /* ---------------- autopilot & self-healing ---------------- */
 
@@ -320,6 +344,10 @@ async function boot() {
   await pollEvents();
   window.addEventListener('hashchange', navigate);
   navigate();
-  setInterval(async () => { await pollEvents(); await refresh(); healIfNeeded(); }, 1400);
+  connectLive();
+  setInterval(async () => {
+    if (!liveHealthy()) { await pollEvents(); await refresh(); }
+    healIfNeeded();
+  }, 1400);
   setInterval(autopilotTick, 4200);
 }

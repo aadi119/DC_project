@@ -87,6 +87,8 @@ public final class RailwayWebServer {
             t.setDaemon(true);
             return t;
         }));
+        LiveStream live = new LiveStream(system::state, GSON);
+        http.createContext("/api/stream", live::open);
         http.createContext("/api/", server::handleApi);
         http.createContext("/", server::handleStatic);
         http.start();
