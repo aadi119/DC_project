@@ -6,8 +6,8 @@ import java.util.List;
  * Live feed of everything that happens in the railway system, used by the
  * web dashboard.
  *
- *   kind "station" → a station event with its physical time and Lamport
- *                    timestamp (every RailwayStation.printEvent call)
+ *   kind "station" → a station event with its physical time, Lamport
+ *                    timestamp and vector clock (every RailwayStation.printEvent call)
  *   kind "console" → a line printed to the terminal (captured by the server)
  *
  * Entries get increasing sequence numbers, so a client can ask for
@@ -16,7 +16,7 @@ import java.util.List;
 public final class EventFeed {
 
     public record Entry(long seq, String kind, String time, String station,
-                        Integer lamport, String text) {
+                        Integer lamport, int[] vector, String text) {
     }
 
     private static final int CAPACITY = 4000;
@@ -28,12 +28,12 @@ public final class EventFeed {
     }
 
     public static synchronized void station(String time, String station,
-                                            int lamport, String message) {
-        add(new Entry(nextSeq++, "station", time, station, lamport, message));
+                                            int lamport, int[] vector, String message) {
+        add(new Entry(nextSeq++, "station", time, station, lamport, vector, message));
     }
 
     public static synchronized void console(String line) {
-        add(new Entry(nextSeq++, "console", null, null, null, line));
+        add(new Entry(nextSeq++, "console", null, null, null, null, line));
     }
 
     private static void add(Entry entry) {

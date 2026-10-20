@@ -160,10 +160,12 @@ public class ReplicationManager {
                     primary.getStationName(), sendTimestamp, requestId);
 
             try {
-                TrackStateReplica.Ack ack = backup.receiveReplicationUpdate(message);
+                TrackStateReplica.Ack ack = backup.receiveReplicationUpdate(message,
+                        primary.vectorAt(sendTimestamp));
 
                 // The ACK is a message too: merge its timestamp at the primary
-                primary.receiveLamportTimestamp(ack.lamportTimestamp());
+                primary.receiveLamportTimestamp(ack.lamportTimestamp(),
+                        backup.vectorAt(ack.lamportTimestamp()));
 
                 if (ack.version() != version) {
                     throw new IllegalStateException("ACK for wrong version "
@@ -410,7 +412,7 @@ public class ReplicationManager {
 
         for (RailwayStation station : stations) {
             if (station.isActive() && station != newPrimary) {
-                station.printReceivedEvent(timestamp,
+                station.printReceivedEvent(timestamp, newPrimary.vectorAt(timestamp),
                         "Received COORDINATOR message: new primary = "
                         + newPrimary.getStationName());
             }
@@ -508,9 +510,10 @@ public class ReplicationManager {
         TrackStateReplica.Ack ack = target.receiveStateTransfer(
                 primaryReplica.snapshot(),
                 primaryReplica.appliedRequestsSnapshot(), version,
-                sendTimestamp, primary.getStationName());
+                sendTimestamp, primary.vectorAt(sendTimestamp), primary.getStationName());
 
-        primary.receiveLamportTimestamp(ack.lamportTimestamp());
+        primary.receiveLamportTimestamp(ack.lamportTimestamp(),
+                target.vectorAt(ack.lamportTimestamp()));
 
         target.printAtTimestamp(ack.lamportTimestamp(),
                 "INSTALLED snapshot v" + version + " from "

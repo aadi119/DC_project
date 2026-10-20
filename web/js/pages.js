@@ -18,7 +18,7 @@ const ICON = {
 const local = {
   rpcLast: null, rpcHistory: [], burst: null, threads: null,
   trace: null, electionEvents: null, sweep: [], route: { i: 0, j: 3 },
-  tlWindow: 80, fleetPlayed: null, lastDispatchShown: null,
+  tlWindow: 80, tlSelected: null, fleetPlayed: null, lastDispatchShown: null,
 };
 
 const nowTime = () => new Date().toTimeString().slice(0, 8);
@@ -488,8 +488,9 @@ page({
       <div id="clk-result" class="mt-s"></div>
     </div>
     <div class="panel mt">
-      <div class="panel-head"><h3>Causal timeline</h3><span class="sub">x = logical time λ · arrows = messages between stations</span>
+      <div class="panel-head"><h3>Causal timeline</h3><span class="sub">x = logical time λ · arrows = messages · click an event to see its causal relations</span>${info('Each event also carries a <b>vector clock</b> V: one counter per station.<br>Event: V[own] + 1. Receive: V = max(V, V<sub>message</sub>), then V[own] + 1.<br><b>a → b</b> (a happened before b) exactly when V(a) ≤ V(b) in every entry and they differ.<br>If neither is ≤ the other, the events are <b>concurrent</b>: no message chain connects them. Lamport times alone cannot tell this.')}
         <span class="right"><span class="dim" style="font-size:12px">show last</span><select id="tl-win"><option>40</option><option selected>80</option><option>160</option></select></span></div>
+      <div id="tl-rel" class="mt-s"></div>
       <div class="tl-scroll" id="tl-chart"></div>
     </div>
     <div class="grid cols-2 mt">
@@ -499,18 +500,45 @@ page({
   mount() {
     local.clkTimer = setInterval(tickClocks, 97);
     $('#tl-win').value = String(local.tlWindow);
+    $('#tl-chart').addEventListener('click', (ev) => {
+      const c = ev.target.closest('circle[data-seq]');
+      local.tlSelected = c ? (+c.dataset.seq === local.tlSelected ? null : +c.dataset.seq) : null;
+      App.page.update();
+    });
     $('#tl-win').addEventListener('change', (e) => { local.tlWindow = +e.target.value; App.page.update(); });
   },
   leave() { clearInterval(local.clkTimer); },
   update() {
     const s = App.state;
     updateClocks(s);
-    view('#tl-clocks').html = s.stations.map((st) => `<div class="metric" style="border-top:3px solid ${ST_COLOR[st.name]}"><div class="label">${esc(place(st.name))}</div><div class="value mono">λ ${st.lamport}</div><div class="hint">${st.active ? 'online' : 'offline'}</div></div>`).join('');
+    view('#tl-clocks').html = s.stations.map((st) => `<div class="metric" style="border-top:3px solid ${ST_COLOR[st.name]}"><div class="label">${esc(place(st.name))}</div><div class="value mono">λ ${st.lamport}</div><div class="hint mono">V ${vec(st.vector)} · ${st.active ? 'online' : 'offline'}</div></div>`).join('');
+    const win = App.events.slice(-local.tlWindow);
+    const sel = win.find((e) => e.seq === local.tlSelected);
+    if (sel) {
+      const count = { before: 0, after: 0, concurrent: 0 };
+      for (const e of win) { if (e.seq === sel.seq) continue; const o = vcOrder(e.vector, sel.vector); if (o === -1) count.before++; else if (o === 1) count.after++; else if (o === 0) count.concurrent++; }
+      view('#tl-rel').html = `<div class="clk-steps"><span class="chip c-grey">selected</span><b style="color:${ST_COLOR[sel.station]}">${esc(place(sel.station))}</b><span class="mono">λ${sel.lamport} · V=${vec(sel.vector)}</span><span class="dim">${esc(sel.text)}</span>
+        <span style="color:${REL_COLOR.before}">● ${count.before} happened before</span><span style="color:${REL_COLOR.after}">● ${count.after} happened after</span><span style="color:${REL_COLOR.concurrent}">◌ ${count.concurrent} concurrent</span></div>`;
+    } else {
+      view('#tl-rel').html = '';
+    }
     view('#tl-chart').html = timelineSvg(App.events.slice(-local.tlWindow));
     const ordered = App.events.slice(-30).sort((a, b) => a.lamport - b.lamport || a.station.localeCompare(b.station));
-    view('#tl-order').html = ordered.length ? `<table><thead><tr><th>λ</th><th>Station</th><th>Wall clock</th><th>Event</th></tr></thead><tbody>${ordered.map((e) => `<tr><td class="mono"><b>${e.lamport}</b></td><td style="color:${ST_COLOR[e.station]};font-weight:700">${esc(place(e.station))}</td><td class="mono dim">${esc(e.time)}</td><td style="font-size:12.5px">${esc(e.text)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No events yet.</div>';
+    view('#tl-order').html = ordered.length ? `<table><thead><tr><th>λ</th><th>Vector</th><th>Station</th><th>Wall clock</th><th>Event</th></tr></thead><tbody>${ordered.map((e) => `<tr><td class="mono"><b>${e.lamport}</b></td><td class="mono dim">${vec(e.vector)}</td><td style="color:${ST_COLOR[e.station]};font-weight:700">${esc(place(e.station))}</td><td class="mono dim">${esc(e.time)}</td><td style="font-size:12.5px">${esc(e.text)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No events yet.</div>';
   },
 });
+
+/* Vector clocks: -1 a happened before b, 1 after, 0 concurrent, null unknown. */
+const vec = (v) => (v ? '[' + v.join(',') + ']' : '—');
+function vcOrder(a, b) {
+  if (!a || !b) return null;
+  let less = false; let more = false;
+  for (let i = 0; i < a.length; i++) { if (a[i] < b[i]) less = true; else if (a[i] > b[i]) more = true; }
+  if (less && !more) return -1;
+  if (more && !less) return 1;
+  return less && more ? 0 : null; // equal vectors: same event
+}
+const REL_COLOR = { before: '#22d3ee', after: '#a78bfa', concurrent: '#fbbf24' };
 
 function timelineSvg(events) {
   if (!events.length) return '<div class="empty" style="margin:16px">No events yet.</div>';
@@ -536,9 +564,19 @@ function timelineSvg(events) {
     if (!m || +m[2] < minL) continue;
     svg += `<line x1="${x(+m[2])}" y1="${y(m[1])}" x2="${x(e.lamport)}" y2="${y(e.station)}" stroke="#a78bfa" stroke-width="1.6" stroke-opacity=".75" marker-end="url(#tlArrow)"/>`;
   }
+  const sel = events.find((e) => e.seq === local.tlSelected);
   for (const e of events) {
     const kind = e.text.includes('FAILURE') ? '#f87171' : e.text.startsWith('ELECTION') ? '#facc15' : e.text.startsWith('RPC') ? '#22d3ee' : ST_COLOR[e.station];
-    svg += `<circle cx="${x(e.lamport)}" cy="${y(e.station)}" r="6" fill="${kind}" stroke="#060b16" stroke-width="2"><title>λ${e.lamport} · ${esc(place(e.station))} · ${esc(e.time)}\n${esc(e.text)}</title></circle>`;
+    let ring = '';
+    if (sel) {
+      if (e.seq === sel.seq) ring = `<circle cx="${x(e.lamport)}" cy="${y(e.station)}" r="12" fill="none" stroke="#fff" stroke-width="2.5"/>`;
+      else {
+        const o = vcOrder(e.vector, sel.vector);
+        const rel = o === -1 ? 'before' : o === 1 ? 'after' : o === 0 ? 'concurrent' : null;
+        if (rel) ring = `<circle cx="${x(e.lamport)}" cy="${y(e.station)}" r="10" fill="none" stroke="${REL_COLOR[rel]}" stroke-width="2"${rel === 'concurrent' ? ' stroke-dasharray="3 2"' : ''}/>`;
+      }
+    }
+    svg += `${ring}<circle data-seq="${e.seq}" style="cursor:pointer" cx="${x(e.lamport)}" cy="${y(e.station)}" r="6" fill="${kind}" stroke="#060b16" stroke-width="2"${sel && e.seq !== sel.seq ? ' opacity=".55"' : ''}><title>λ${e.lamport} · V=${vec(e.vector)} · ${esc(place(e.station))} · ${esc(e.time)}\n${esc(e.text)}</title></circle>`;
   }
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs><marker id="tlArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#a78bfa"/></marker></defs>${svg}</svg>`;
 }
@@ -592,7 +630,7 @@ Object.assign(ACTIONS, {
 Object.assign(ACTIONS, {
   tlSend: async (b) => {
     const d = await act(b, '/lamport/message', { from: $('#tl-from').value, to: $('#tl-to').value, label: $('#tl-text').value }, (r) => `✉ delivered · receive rule ${r.rule}`);
-    if (d) view('#tl-rule').html = `<span class="chip c-violet">send λ${d.sendTimestamp}</span> <span class="dim">→ receiver was at λ${d.receiverBefore} →</span> <span class="chip c-cyan mono">λ = ${esc(d.rule)}</span>`;
+    if (d) view('#tl-rule').html = `<span class="chip c-violet">send λ${d.sendTimestamp} · V=${vec(d.sendVector)}</span> <span class="dim">→ receiver was at λ${d.receiverBefore} →</span> <span class="chip c-cyan mono">λ = ${esc(d.rule)}</span> <span class="chip c-gold mono">V = ${vec(d.receiveVector)}</span>`;
   },
   tlLocal: async (b) => {
     const d = await act(b, '/lamport/local', { station: $('#tl-local').value, label: 'signal check' }, (r) => `• ${r.rule}`);

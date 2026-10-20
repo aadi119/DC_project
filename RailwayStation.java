@@ -5,6 +5,8 @@ import java.nio.file.Path;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -34,6 +36,20 @@ public class RailwayStation {
     private int lamportClock = 0;
 
     private final Object clockLock = new Object();
+
+    // Vector clock: one counter per station (index = station ID - 1).
+    // Unlike a Lamport clock it can tell whether two events are concurrent.
+    public static final int NETWORK_SIZE = 4;
+    private final int[] vectorClock = new int[NETWORK_SIZE];
+
+    // Vector at each of this station's Lamport timestamps (each timestamp is
+    // used once per station), so a message's vector can be sent with it
+    private final Map<Integer, int[]> vectorHistory = new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Integer, int[]> eldest) {
+            return size() > 4000;
+        }
+    };
 
     // Experiment 3: the station's physical clock. Every station starts with
     // a different offset and drift, as real hardware clocks do.
@@ -115,7 +131,39 @@ public class RailwayStation {
 
         synchronized (clockLock) {
             lamportClock++;
+            tickVector(null);
             return lamportClock;
+        }
+    }
+
+    /** Vector rule: merge the sender's vector (if any), then tick own entry. Holds clockLock. */
+    private void tickVector(int[] senderVector) {
+        if (senderVector != null) {
+            for (int i = 0; i < NETWORK_SIZE && i < senderVector.length; i++) {
+                vectorClock[i] = Math.max(vectorClock[i], senderVector[i]);
+            }
+        }
+        int own = stationId - 1;
+        if (own >= 0 && own < NETWORK_SIZE) {
+            vectorClock[own]++;
+        }
+        vectorHistory.put(lamportClock, vectorClock.clone());
+    }
+
+    /** This station's vector clock right now. */
+    public int[] getVectorClock() {
+
+        synchronized (clockLock) {
+            return vectorClock.clone();
+        }
+    }
+
+    /** The vector this station had at one of its Lamport timestamps (null if unknown). */
+    public int[] vectorAt(int lamportTimestamp) {
+
+        synchronized (clockLock) {
+            int[] vector = vectorHistory.get(lamportTimestamp);
+            return vector == null ? null : vector.clone();
         }
     }
 
@@ -127,11 +175,21 @@ public class RailwayStation {
     }
 
     public int receiveLamportTimestamp(int receivedTimestamp) {
+        return receiveLamportTimestamp(receivedTimestamp, null);
+    }
+
+    /**
+     * Receive event. Lamport: L = max(L, t) + 1. Vector: V = max(V, V_msg),
+     * then V[own] + 1. senderVector may be null (sender has no vector clock).
+     */
+    public int receiveLamportTimestamp(int receivedTimestamp, int[] senderVector) {
 
         synchronized (clockLock) {
 
             lamportClock =
                     Math.max(lamportClock, receivedTimestamp) + 1;
+
+            tickVector(senderVector);
 
             return lamportClock;
         }
@@ -173,17 +231,27 @@ public class RailwayStation {
         );
 
         // Web dashboard: the same event as structured data
-        EventFeed.station(physicalTime, stationName, timestamp, message);
+        EventFeed.station(physicalTime, stationName, timestamp, vectorAt(timestamp), message);
     }
 
     /** Prints an event caused by a received message (Lamport receive rule). */
     int printReceivedEvent(int messageTimestamp, String message) {
+        return printReceivedEvent(messageTimestamp, null, message);
+    }
 
-        int timestamp = receiveLamportTimestamp(messageTimestamp);
+    /** As above, merging the vector clock that came with the message. */
+    int printReceivedEvent(int messageTimestamp, int[] senderVector, String message) {
+
+        int timestamp = receiveLamportTimestamp(messageTimestamp, senderVector);
 
         printAtTimestamp(timestamp, message);
 
         return timestamp;
+    }
+
+    /** Vector clock as text, e.g. [2,0,1,3]. */
+    public static String formatVector(int[] vector) {
+        return vector == null ? "[]" : Arrays.toString(vector).replace(" ", "");
     }
 
     private void printElectionEvent(String message) {
@@ -850,12 +918,18 @@ public class RailwayStation {
     /** Backup applies one update from the primary and returns an ACK. */
     public TrackStateReplica.Ack receiveReplicationUpdate(
             TrackStateReplica.Update update) {
+        return receiveReplicationUpdate(update, null);
+    }
+
+    /** As above; senderVector is the primary's vector clock sent with the update. */
+    public TrackStateReplica.Ack receiveReplicationUpdate(
+            TrackStateReplica.Update update, int[] senderVector) {
 
         if (!active) {
             throw new IllegalStateException(stationName + " is not responding");
         }
 
-        int timestamp = receiveLamportTimestamp(update.lamportTimestamp());
+        int timestamp = receiveLamportTimestamp(update.lamportTimestamp(), senderVector);
         long version = replica.applyUpdate(update);
 
         recordEvent(timestamp, "REPLICATION_EVENT",
@@ -871,12 +945,24 @@ public class RailwayStation {
             long version,
             int messageTimestamp,
             String primaryName) {
+        return receiveStateTransfer(snapshot, appliedRequests, version,
+                messageTimestamp, null, primaryName);
+    }
+
+    /** As above, with the primary's vector clock sent with the snapshot. */
+    public TrackStateReplica.Ack receiveStateTransfer(
+            Map<String, TrackStateReplica.TrackStatus> snapshot,
+            Map<String, Long> appliedRequests,
+            long version,
+            int messageTimestamp,
+            int[] senderVector,
+            String primaryName) {
 
         if (!active) {
             throw new IllegalStateException(stationName + " is not responding");
         }
 
-        int timestamp = receiveLamportTimestamp(messageTimestamp);
+        int timestamp = receiveLamportTimestamp(messageTimestamp, senderVector);
         replica.installSnapshot(snapshot, appliedRequests, version);
 
         recordEvent(timestamp, "REPLICATION_EVENT",
@@ -901,7 +987,7 @@ public class RailwayStation {
             return false;
         }
 
-        int timestamp = printReceivedEvent(messageTimestamp,
+        int timestamp = printReceivedEvent(messageTimestamp, monitor.vectorAt(messageTimestamp),
                 "HEARTBEAT ACK → " + monitor.getStationName());
 
         recordEvent(timestamp, "HEARTBEAT_EVENT",

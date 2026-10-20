@@ -13,6 +13,7 @@ import java.util.List;
  *   PART 2  With such clocks, a message can appear to be received before
  *           it was sent (physical timestamps break causality).
  *   PART 3  Lamport logical clocks order the same events correctly.
+ *   PART 3b Vector clocks also tell which events are concurrent.
  *   PART 4  Cristian's algorithm: one station syncs with a time server.
  *   PART 5  Berkeley algorithm: the coordinator averages all clocks,
  *           ignoring a faulty one, and corrects every station.
@@ -23,7 +24,7 @@ public class RailwayClockSyncDemo {
     private static final long NETWORK_DELAY_MS = 40;
 
     /** One event with its Lamport time, for the total order in Part 3. */
-    private record LamportEvent(int lamport, int stationId, String station, String text) {
+    private record LamportEvent(int lamport, int[] vector, int stationId, String station, String text) {
     }
 
     private static final List<LamportEvent> events = new ArrayList<>();
@@ -79,6 +80,17 @@ public class RailwayClockSyncDemo {
         }
         Terminal.blank();
         Terminal.line("✓ Every RECEIVE comes after its SEND: if a → b then L(a) < L(b).");
+
+        // ---------------- PART 3b ----------------
+        Terminal.section("PART 3b: VECTOR CLOCKS DETECT CONCURRENT EVENTS");
+        Terminal.line("Vector rule: own entry + 1 on every event; on receive, first take the");
+        Terminal.line("element-wise max with the message's vector. a → b  ⇔  V(a) ≤ V(b) and V(a) ≠ V(b).");
+        Terminal.blank();
+        compare(find("TRAIN-301 doors closed"), find("Signal S3 set to RED"));
+        compare(find("SEND \"TRAIN-301 departed\" → STATION-02"), find("Signal S3 set to GREEN"));
+        compare(find("Reserve TRACK-03 for TRAIN-301"), find("Signal S3 set to RED"));
+        Terminal.line("Lamport gives \"Signal S3 set to RED\" (L=1) a smaller time than \"doors closed\" (L=2),");
+        Terminal.line("but neither caused the other: only the vector clocks reveal that they are concurrent.");
 
         // ---------------- PART 4 ----------------
         Terminal.section("PART 4: CRISTIAN'S ALGORITHM (STATION-02 ↔ GPS time server)");
@@ -163,6 +175,34 @@ public class RailwayClockSyncDemo {
         print(s, l, text);
     }
 
+    private static LamportEvent find(String text) {
+        return events.stream().filter(e -> e.text().startsWith(text)).findFirst().orElseThrow();
+    }
+
+    /** -1: a before b, 1: b before a, 0: concurrent. */
+    private static int order(int[] a, int[] b) {
+        boolean aLess = false;
+        boolean bLess = false;
+        for (int i = 0; i < a.length; i++) {
+            if (a[i] < b[i]) {
+                aLess = true;
+            } else if (a[i] > b[i]) {
+                bLess = true;
+            }
+        }
+        return aLess && !bLess ? -1 : bLess && !aLess ? 1 : 0;
+    }
+
+    private static void compare(LamportEvent a, LamportEvent b) {
+        int order = order(a.vector(), b.vector());
+        String verdict = order == -1 ? "→ HAPPENED BEFORE" : order == 1 ? "← HAPPENED AFTER" : "∥ CONCURRENT";
+        Terminal.line(String.format("  %-42s %-10s L=%d", "\"" + a.text() + "\"",
+                RailwayStation.formatVector(a.vector()), a.lamport()));
+        Terminal.line(String.format("  %-42s %-10s L=%-2d  %s",
+                "\"" + b.text() + "\"", RailwayStation.formatVector(b.vector()), b.lamport(), verdict));
+        Terminal.blank();
+    }
+
     private static int send(RailwayStation from, RailwayStation to, String text) {
         int l = from.sendLamportTimestamp();
         print(from, l, "SEND \"" + text + "\" → " + to.getStationName());
@@ -171,15 +211,16 @@ public class RailwayClockSyncDemo {
 
     private static void receive(RailwayStation to, RailwayStation from, int messageL, String text) {
         int before = to.getLamportClock();
-        int l = to.receiveLamportTimestamp(messageL);
+        int l = to.receiveLamportTimestamp(messageL, from.vectorAt(messageL));
         print(to, l, "RECEIVE \"" + text + "\" from " + from.getStationName()
                 + "  L = max(" + before + ", " + messageL + ") + 1");
     }
 
     private static void print(RailwayStation s, int l, String text) {
+        int[] vector = s.vectorAt(l);
         Terminal.line("[" + s.getPhysicalClock().reading() + "] [" + s.getStationName()
-                + "] [L=" + l + "] " + text);
-        events.add(new LamportEvent(l, s.getStationId(), s.getStationName(), text));
+                + "] [L=" + l + "] [V=" + RailwayStation.formatVector(vector) + "] " + text);
+        events.add(new LamportEvent(l, vector, s.getStationId(), s.getStationName(), text));
     }
 
     private static void lamportScenario(RailwayStation s1, RailwayStation s2, RailwayStation s3) {

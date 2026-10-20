@@ -183,6 +183,7 @@ public final class RailwaySystem {
             m.put("overloaded", s.isOverloaded());
             m.put("role", role);
             m.put("lamport", s.getLamportClock());
+            m.put("vector", s.getVectorClock());
             m.put("version", s.getReplica().getVersion());
             m.put("checksum", s.getReplica().checksum());
             m.put("events", s.getEventCount());
@@ -544,6 +545,7 @@ public final class RailwaySystem {
             int receiverBefore = receiver.getLamportClock();
             int sendTimestamp = sender.printEvent("SEND \"" + label + "\" → " + to);
             int receiveTimestamp = receiver.printReceivedEvent(sendTimestamp,
+                    sender.vectorAt(sendTimestamp),
                     "RECEIVE \"" + label + "\" from " + from + " (msg L=" + sendTimestamp
                             + ") → L = max(" + receiverBefore + ", " + sendTimestamp + ") + 1");
 
@@ -554,6 +556,8 @@ public final class RailwaySystem {
             result.put("receiverBefore", receiverBefore);
             result.put("receiveTimestamp", receiveTimestamp);
             result.put("rule", "max(" + receiverBefore + ", " + sendTimestamp + ") + 1 = " + receiveTimestamp);
+            result.put("sendVector", sender.vectorAt(sendTimestamp));
+            result.put("receiveVector", receiver.vectorAt(receiveTimestamp));
             return result;
         });
     }

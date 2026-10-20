@@ -65,4 +65,25 @@ class ClockTest {
         assertEquals(java.util.List.of("STATION-02"), r.unreachable());
         assertEquals(3, r.readings().size());
     }
+
+    @Test
+    void vectorClocksSeparateCausalityFromConcurrency() {
+        TestNetwork net = new TestNetwork();
+        int a = net.s1.sendLamportTimestamp();                       // S1 local
+        int send = net.s1.sendLamportTimestamp();                    // S1 send
+        int c = net.s3.sendLamportTimestamp();                       // S3 local, unrelated
+        int recv = net.s2.receiveLamportTimestamp(send, net.s1.vectorAt(send));
+
+        assertEquals("[2,1,0,0]", RailwayStation.formatVector(net.s2.vectorAt(recv)));
+        assertEquals("[0,0,1,0]", RailwayStation.formatVector(net.s3.vectorAt(c)));
+        // a → receive: every entry ≤ and not equal
+        int[] va = net.s1.vectorAt(a);
+        int[] vr = net.s2.vectorAt(recv);
+        for (int i = 0; i < va.length; i++) {
+            assertTrue(va[i] <= vr[i]);
+        }
+        // S3's event is concurrent with S1's: neither vector is ≤ the other
+        int[] vc = net.s3.vectorAt(c);
+        assertTrue(vc[2] > va[2] && va[0] > vc[0]);
+    }
 }
