@@ -13,6 +13,7 @@ const ICON = {
   fleet: '<svg viewBox="0 0 20 20"><circle cx="10" cy="4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="16" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 6.5v6M8.6 6l-3.6 7M11.4 6l3.6 7" stroke="currentColor" stroke-width="1.4"/></svg>',
   routes: '<svg viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="12" y="3" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="12" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="12" y="12" width="5" height="5" rx="1.2" fill="currentColor" opacity=".7"/></svg>',
   section: '<svg viewBox="0 0 20 20"><path d="M3 16V10a7 7 0 0 1 14 0v6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M1.5 16h17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><rect x="7.5" y="11" width="5" height="3" rx="1" fill="currentColor"/></svg>',
+  timetable: '<svg viewBox="0 0 20 20"><rect x="3" y="3.5" width="14" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 8h14M8 8v8.5" stroke="currentColor" stroke-width="1.4"/></svg>',
   system: '<svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4M11 4l-2 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -656,6 +657,108 @@ Object.assign(ACTIONS, {
     await act(b, '/section/request', { requests: picked }, (d) => `🚆 ${d.result.passages.length} train(s) passed one at a time · ${d.result.messages.length} messages`);
   },
   secReplay: () => secPlay(true),
+});
+
+/* =========================================================
+   TIMETABLE (planned vs actual) + session report
+   ========================================================= */
+
+const TT_STATUS = { 'ON TIME': 'c-green', DELAYED: 'c-amber', 'HELD AT SIGNAL': 'c-red', 'AWAITING RETRY': 'c-violet', 'NOT DISPATCHED': 'c-red', PLANNED: 'c-grey' };
+
+page({
+  id: 'timetable', title: 'Timetable', icon: ICON.timetable,
+  render: () => `
+    <div class="page-head">
+      <div><h1>Timetable</h1><p>Every train movement with its planned and actual time. A movement is planned for the moment its route could be ready; queues, crashes and retries make it late.</p></div>
+      <div class="actions"><button class="btn primary" data-act="ttReport">Export session report</button></div>
+    </div>
+    <div class="metrics" id="tt-metrics"></div>
+    <div class="panel mt">
+      <div class="panel-head"><h3>Departures and arrivals</h3><span class="sub">newest first · updates live</span>${info('<b>Planned</b> = request time + the route preparation time of a station (200 ms).<br><b>Actual</b> = when the control centre committed the movement and every mirror acknowledged it.<br>Late by more than 150 ms → <b>delayed</b>: for example a station had to finish another train first, or the control centre crashed and the request was retried on the new one.<br>A conflicting movement is <b>held at a red signal</b> and never runs.')}
+        <span class="right"><select id="tt-filter"><option value="">All</option><option>ON TIME</option><option>DELAYED</option><option>HELD AT SIGNAL</option><option>AWAITING RETRY</option></select></span></div>
+      <div id="tt-table" class="scroll" style="max-height:560px"></div>
+    </div>`,
+  mount() {
+    $('#tt-filter').value = local.ttFilter || '';
+    $('#tt-filter').addEventListener('change', (e) => { local.ttFilter = e.target.value; App.page.update(); });
+  },
+  update() {
+    const tt = App.state.timetable;
+    const s = tt.summary;
+    const settled = s.onTime + s.delayed;
+    view('#tt-metrics').html = [
+      ['Movements', s.total, 'since the last reset'],
+      ['On time', settled ? Math.round(s.onTime / settled * 100) + '%' : '—', `${s.onTime} of ${settled} completed`],
+      ['Delayed', s.delayed, 'more than 150 ms late'],
+      ['Average delay', s.avgDelayMs + ' ms', `worst ${s.maxDelayMs} ms`],
+      ['Held at signal', s.held, 'conflicting movement refused'],
+      ['Waiting', s.waiting, 'retry pending / no station'],
+    ].map(([l, v, h]) => `<div class="metric"><div class="label">${l}</div><div class="value">${v}</div><div class="hint">${h}</div></div>`).join('');
+    const rows = tt.journeys.filter((j) => !local.ttFilter || j.status === local.ttFilter);
+    view('#tt-table').html = rows.length ? `<table><thead><tr><th>#</th><th>Train</th><th>Movement</th><th>Track</th><th>Station</th><th>Requested</th><th>Planned</th><th>Actual</th><th>Delay</th><th>Status</th><th>Note</th></tr></thead><tbody>${rows.map((j) => `<tr>
+      <td class="dim">${j.id}</td><td class="mono"><b>${esc(j.train)}</b></td><td>${j.movement === 'ARRIVAL' ? '↘ arrival' : '↗ departure'}</td><td class="mono">${esc(j.track)}</td>
+      <td>${j.station ? `<span style="color:${ST_COLOR[j.station]};font-weight:700">${esc(place(j.station))}</span>` : '<span class="dim">—</span>'}</td>
+      <td class="mono dim">${esc(j.requestedAt)}</td><td class="mono">${esc(j.plannedAt)}</td><td class="mono">${esc(j.actualAt || '—')}</td>
+      <td class="mono ${j.delayMs > 150 ? 'warn' : ''}">${j.delayMs == null ? '—' : '+' + j.delayMs + ' ms'}</td>
+      <td>${chip(j.status, TT_STATUS[j.status] || 'c-grey')}</td><td class="dim" style="font-size:12px">${esc(j.note || '')}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty">No train movements yet. Dispatch trains or switch on Autopilot.</div>';
+  },
+});
+
+/* ---------- session report (Markdown download) ---------- */
+
+function sessionReport() {
+  const s = App.state;
+  const now = new Date();
+  const L = [];
+  const t = s.timetable.summary;
+  L.push('# RailNet Ops session report', '', `Generated ${now.toLocaleString()}`, '');
+  L.push('## Network', '', '| Station | Place | Status | Role | Term | Version | Lamport | Vector | Clock offset |', '|---|---|---|---|---|---|---|---|---|');
+  for (const st of s.stations) {
+    L.push(`| ${st.name} | ${place(st.name)} | ${st.active ? 'online' : 'offline'} | ${st.deposed ? 'deposed leader' : st.role.toLowerCase()}${st.coordinator ? ', coordinator' : ''} | ${st.term} | v${st.version} | ${st.lamport} | [${st.vector.join(',')}] | ${st.clockOffsetMs} ms |`);
+  }
+  L.push('', `- Control centre: **${place(s.primary)}** (term ${s.term}), mirrors: ${s.backups.map(place).join(', ') || 'none'}`);
+  L.push(`- State version: v${s.version}; automatic failovers: ${s.failovers}`);
+  L.push(`- Cut network links: ${s.cutLinks.length ? s.cutLinks.map(([a, b]) => `${place(a)}–${place(b)}`).join(', ') : 'none'}`);
+  L.push(`- Clock skew between stations: ${s.clockSkewMs} ms`, '');
+  L.push('## Train movements', '', `- Movements: ${t.total} (on time ${t.onTime}, delayed ${t.delayed}, held at signal ${t.held}, waiting ${t.waiting})`, `- Average delay ${t.avgDelayMs} ms, worst ${t.maxDelayMs} ms`, '');
+  if (s.timetable.journeys.length) {
+    L.push('| # | Train | Movement | Track | Station | Planned | Actual | Delay | Status | Note |', '|---|---|---|---|---|---|---|---|---|---|');
+    for (const j of s.timetable.journeys.slice().reverse()) {
+      L.push(`| ${j.id} | ${j.train} | ${j.movement.toLowerCase()} | ${j.track} | ${j.station ? place(j.station) : '—'} | ${j.plannedAt} | ${j.actualAt || '—'} | ${j.delayMs == null ? '—' : j.delayMs + ' ms'} | ${j.status} | ${(j.note || '').replace(/\|/g, '/')} |`);
+    }
+    L.push('');
+  }
+  const c = s.client;
+  L.push('## Client requests (fault tolerance)', '', `- Sent ${c.sent}, committed exactly once ${c.committed}, rejected ${c.rejected}`, `- Lost replies ${c.timeouts}, retries ${c.retries}, duplicates prevented ${c.duplicates}, still pending ${c.pending.length}`, '');
+  const r = s.results;
+  L.push('## Latest results', '');
+  if (r.election) L.push(`- Election (${r.election.algorithm}): ${place(r.election.winner)} won after ${r.election.messages} messages`);
+  if (r.detection) L.push(`- Failure detection: ${place(r.detection.target)} ${r.detection.declaredFailed ? 'declared failed' : 'healthy'}${r.detection.newPrimary ? `, ${place(r.detection.newPrimary)} took over` : ''}`);
+  if (r.analytics) L.push(`- Traffic analytics (Spark MapReduce): finished in ${r.analytics.elapsedMs} ms`);
+  if (r.collectives) L.push('- Fleet sync (MPI Broadcast/Scatter/Gather): run completed');
+  if (r.matrix) L.push('- Route planner (parallel matrix multiplication with MPI): run completed');
+  if (r.section) L.push(`- Hillcrest Tunnel (Ricart–Agrawala): ${r.section.result.passages.length} train(s), ${r.section.result.messages.length} messages, mutual exclusion ${r.section.result.mutualExclusion ? 'held' : 'VIOLATED'}`);
+  if (r.staleWrite) L.push(`- Deposed leader ${place(r.staleWrite.result.oldPrimary)} wrote with term ${r.staleWrite.result.oldTerm}: rejected by ${r.staleWrite.result.rejectedBy.map(place).join(', ') || 'nobody'}`);
+  if (r.clock) L.push(`- Clock synchronization (${r.clock.algorithm}): skew now ${r.clock.skewMs} ms`);
+  if (!Object.keys(r).length) L.push('- No experiments run yet in this session');
+  L.push('');
+  return L.join('\n');
+}
+
+Object.assign(ACTIONS, {
+  ttReport: () => {
+    const blob = new Blob([sessionReport()], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    a.href = URL.createObjectURL(blob);
+    a.download = `railnet-report-${stamp}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast('⇩ Session report downloaded', 'ok');
+  },
 });
 
 /* =========================================================

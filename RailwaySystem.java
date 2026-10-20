@@ -8,6 +8,9 @@ import java.nio.file.Path;
 import java.rmi.RemoteException;
 import java.rmi.ServerException;
 import java.util.Random;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -66,6 +69,103 @@ public final class RailwaySystem {
     private int nextClientRequest;
     private int nextTrainNumber;
     private int failovers;
+
+    // =========================================================
+    // TIMETABLE: planned vs actual time of every train movement
+    // =========================================================
+
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+    /** Allowed lateness before a movement counts as delayed. */
+    private static final long DELAY_TOLERANCE_MS = 150;
+
+    /** One train movement: planned when requested, actual when committed. */
+    public static final class Journey {
+        int id;
+        String train;
+        String movement;
+        String track;
+        String station;
+        String source;
+        String requestId;
+        String requestedAt;
+        String plannedAt;
+        String actualAt;
+        Long delayMs;
+        String status;
+        String note;
+        transient LocalTime planned;
+    }
+
+    private final List<Journey> timetable = new ArrayList<>();
+    private int nextJourney = 1;
+
+    private Journey plan(String train, String movement, String track, String station,
+                         String source, String requestId) {
+        LocalTime now = LocalTime.now();
+        Journey j = new Journey();
+        j.id = nextJourney++;
+        j.train = train;
+        j.movement = movement;
+        j.track = track;
+        j.station = station;
+        j.source = source;
+        j.requestId = requestId;
+        j.requestedAt = now.format(CLOCK);
+        j.planned = now.plus(RailwayStation.TRAIN_PROCESSING_TIME_MS, ChronoUnit.MILLIS);
+        j.plannedAt = j.planned.format(CLOCK);
+        j.status = "PLANNED";
+        synchronized (timetable) {
+            timetable.add(j);
+            if (timetable.size() > 300) {
+                timetable.remove(0);
+            }
+        }
+        return j;
+    }
+
+    /** Records the actual time; status ON TIME or DELAYED from the lateness. */
+    private void arrived(Journey j, String note) {
+        arrived(j, LocalTime.now(), note);
+    }
+
+    private void arrived(Journey j, LocalTime now, String note) {
+        j.actualAt = now.format(CLOCK);
+        j.delayMs = Math.max(0, ChronoUnit.MILLIS.between(j.planned, now));
+        j.status = j.delayMs > DELAY_TOLERANCE_MS ? "DELAYED" : "ON TIME";
+        j.note = note;
+    }
+
+    private void held(Journey j, String status, String note) {
+        j.actualAt = null;
+        j.delayMs = null;
+        j.status = status;
+        j.note = note;
+    }
+
+    private Map<String, Object> timetableView() {
+        List<Journey> copy;
+        synchronized (timetable) {
+            copy = new ArrayList<>(timetable);
+        }
+        long onTime = copy.stream().filter(j -> "ON TIME".equals(j.status)).count();
+        long delayed = copy.stream().filter(j -> "DELAYED".equals(j.status)).count();
+        double avg = copy.stream().filter(j -> j.delayMs != null).mapToLong(j -> j.delayMs).average().orElse(0);
+        long max = copy.stream().filter(j -> j.delayMs != null).mapToLong(j -> j.delayMs).max().orElse(0);
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("total", copy.size());
+        summary.put("onTime", onTime);
+        summary.put("delayed", delayed);
+        summary.put("held", copy.stream().filter(j -> "HELD AT SIGNAL".equals(j.status)).count());
+        summary.put("waiting", copy.stream().filter(j -> j.status.startsWith("AWAITING")
+                || "NOT DISPATCHED".equals(j.status)).count());
+        summary.put("avgDelayMs", Math.round(avg));
+        summary.put("maxDelayMs", max);
+        java.util.Collections.reverse(copy);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("summary", summary);
+        view.put("journeys", copy.size() > 120 ? copy.subList(0, 120) : copy);
+        return view;
+    }
 
     // Latest result of each kind, shown again when a page is reopened
     private final Map<String, Object> lastResults = new LinkedHashMap<>();
@@ -150,6 +250,10 @@ public final class RailwaySystem {
             nextTrainNumber = 301;
             failovers = 0;
             lastResults.clear();
+            synchronized (timetable) {
+                timetable.clear();
+            }
+            nextJourney = 1;
             return Map.of("message", "System reset: STATION-04 is coordinator and primary");
         });
     }
@@ -241,6 +345,7 @@ public final class RailwaySystem {
         state.put("serverTimeMs", System.currentTimeMillis());
         state.put("rmiPort", rmi == null ? null : rmi.getPort());
         state.put("client", clientInfo);
+        state.put("timetable", timetableView());
         state.put("lastSeq", EventFeed.lastSeq());
         synchronized (lastResults) {
             state.put("results", new LinkedHashMap<>(lastResults));
@@ -845,6 +950,7 @@ public final class RailwaySystem {
             }
 
             // 1. Route every request (health-aware round-robin) and dispatch at once
+            Map<Integer, Journey> journeys = new LinkedHashMap<>();
             List<Map<String, Object>> decisions = new ArrayList<>();
             List<Future<TrainRequest.Result>> pending = new ArrayList<>();
             long start = System.nanoTime();
@@ -865,8 +971,13 @@ public final class RailwaySystem {
                         decision.skipped().isEmpty() ? ""
                                 : "   (skipped " + String.join(", ", decision.skipped()) + ")"));
 
+                Journey journey = plan(request.trainId(), request.movement().name(), request.trackId(),
+                        decision.assigned() ? decision.station().getStationName() : null, "dispatch", null);
+                journeys.put(request.sequence(), journey);
                 if (decision.assigned()) {
                     pending.add(decision.station().submitTrainRequest(request));
+                } else {
+                    held(journey, "NOT DISPATCHED", "no station available");
                 }
             }
 
@@ -902,6 +1013,14 @@ public final class RailwaySystem {
             List<Map<String, Object>> commits = new ArrayList<>();
             for (TrainRequest.Result r : results) {
                 ReplicationManager.TrainCommit c = replication.commitTrainMovement(r.request());
+                Journey journey = journeys.get(r.request().sequence());
+                if (c.accepted()) {
+                    // actual = when this train's route was ready at its station
+                    arrived(journey, LocalTime.parse(r.finishedAt()),
+                            "v" + c.version() + " on " + r.workerThread());
+                } else {
+                    held(journey, "HELD AT SIGNAL", c.reason());
+                }
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("sequence", r.request().sequence());
                 m.put("train", r.request().trainId());
@@ -993,10 +1112,25 @@ public final class RailwaySystem {
                 }
                 replication.injectCrashBeforeNextReply();
             }
+            Journey journey = plan(request.trainId(), request.movement().name(), request.trackId(),
+                    replication.getPrimary().getStationName(), "client", requestId);
             client.send(requestId, request);
             List<TrainControlClient.Attempt> history = client.getHistory();
+            settle(journey, history.get(history.size() - 1));
             return Map.of("requestId", requestId, "attempt", history.get(history.size() - 1));
         });
+    }
+
+    /** Timetable outcome of one client attempt. */
+    private void settle(Journey j, TrainControlClient.Attempt attempt) {
+        switch (attempt.status()) {
+            case "COMMITTED" -> arrived(j, attempt.attempt() > 1
+                    ? "retry #" + attempt.attempt() + " on " + attempt.primary() : "v" + attempt.version());
+            case "DUPLICATE" -> arrived(j, "control centre crashed before replying; retry on "
+                    + attempt.primary() + " found it already done (v" + attempt.version() + ")");
+            case "REJECTED" -> held(j, "HELD AT SIGNAL", attempt.detail());
+            default -> held(j, "AWAITING RETRY", attempt.detail());
+        }
     }
 
     public Map<String, Object> detectFailure() {
@@ -1047,6 +1181,19 @@ public final class RailwaySystem {
                 throw new ActionException("No request is waiting for a retry");
             }
             client.retryPending();
+            List<TrainControlClient.Attempt> history = client.getHistory();
+            synchronized (timetable) {
+                for (Journey j : timetable) {
+                    if (j.requestId != null && j.status.startsWith("AWAITING")) {
+                        for (int k = history.size() - 1; k >= 0; k--) {
+                            if (history.get(k).requestId().equals(j.requestId)) {
+                                settle(j, history.get(k));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             return Map.of("pending", client.getPendingRequestIds());
         });
     }
