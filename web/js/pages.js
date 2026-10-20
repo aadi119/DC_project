@@ -12,6 +12,7 @@ const ICON = {
   insights: '<svg viewBox="0 0 20 20"><path d="M4 16V9M8 16V5M12 16v-6M16 16V3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   fleet: '<svg viewBox="0 0 20 20"><circle cx="10" cy="4" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="16" cy="15" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 6.5v6M8.6 6l-3.6 7M11.4 6l3.6 7" stroke="currentColor" stroke-width="1.4"/></svg>',
   routes: '<svg viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="12" y="3" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="12" width="5" height="5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="12" y="12" width="5" height="5" rx="1.2" fill="currentColor" opacity=".7"/></svg>',
+  section: '<svg viewBox="0 0 20 20"><path d="M3 16V10a7 7 0 0 1 14 0v6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M1.5 16h17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><rect x="7.5" y="11" width="5" height="3" rx="1" fill="currentColor"/></svg>',
   system: '<svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4M11 4l-2 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -455,6 +456,147 @@ Object.assign(ACTIONS, {
     const d = await act(b, '/election', { algorithm: b.dataset.algo }, (r) => `♛ ${r.algorithm} election: ${place(r.winner)} is coordinator`);
     if (d) { local.electionEvents = d.events; App.page.update(); playElection(d.events); }
   },
+});
+
+/* =========================================================
+   SECTION CONTROL (distributed mutual exclusion)
+   ========================================================= */
+
+const SEC_POS = { 'STATION-01': [120, 78], 'STATION-02': [120, 282], 'STATION-03': [680, 78], 'STATION-04': [680, 282] };
+const SEC_SPEED = 0.45; // replay at less than real speed so messages can be followed
+
+page({
+  id: 'section', title: 'Tunnel', icon: ICON.section,
+  render: () => `
+    <div class="page-head">
+      <div><h1>Tunnel Control</h1><p>Hillcrest Tunnel is single-track: only one train may be inside. The stations decide who goes next purely by exchanging messages; there is no central lock.</p></div>
+    </div>
+    <div class="grid side-main">
+      <div class="panel">
+        <div class="panel-head"><h3>Request the tunnel</h3>${info('<b>Ricart–Agrawala mutual exclusion.</b><br>A station that wants the tunnel sends <b>REQUEST(λ, id)</b> to every other station and waits for a <b>REPLY</b> from all of them.<br>A station receiving a request replies at once, unless it is inside the tunnel or wants it itself with an older request (smaller λ, ties broken by smaller id). Then it <b>defers</b> the reply until it leaves.<br>So exactly one request collects every reply first. Cost: 2(N−1) messages per entry.')}</div>
+        <div class="dim" style="font-size:12.5px;margin-bottom:8px">Stations that want to send a train through at the same moment:</div>
+        <div class="sec-picks">${STATIONS.map((s, i) => `<label class="sec-pick" style="--c:${ST_COLOR[s]}"><input type="checkbox" value="${s}" ${i !== 1 ? 'checked' : ''}><span>${esc(place(s))}</span></label>`).join('')}</div>
+        <div class="row mt"><button class="btn primary" data-act="secRequest">Request together</button><button class="btn" data-act="secReplay">Replay</button></div>
+        <div id="sec-verdict" class="mt"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Message flow</h3><span class="sub">replayed from the real run · <span style="color:var(--cyan)">REQUEST</span> · <span style="color:var(--green)">REPLY</span> · <span style="color:var(--amber)">deferred</span></span><span class="right mono dim" id="sec-clock"></span></div>
+        <div class="sec-stage"><svg viewBox="0 0 800 360" id="sec-svg"></svg></div>
+        <div class="sec-progress"><div id="sec-bar"></div></div>
+      </div>
+    </div>
+    <div class="panel mt">
+      <div class="panel-head"><h3>Order of passage</h3><span class="sub">who entered when, and who made them wait</span></div>
+      <div id="sec-table"></div>
+    </div>`,
+  mount() { local.secT = 0; secPlay(false); },
+  leave() { cancelAnimationFrame(local.secRaf); },
+  update() {
+    const r = App.state.results.section;
+    for (const box of $$('.sec-pick input')) {
+      const st = station(box.value);
+      box.disabled = !st.active;
+      box.closest('.sec-pick').classList.toggle('off', !st.active);
+    }
+    if (!r) {
+      view('#sec-verdict').html = '<div class="empty">Pick two or more stations and send their requests at the same moment.</div>';
+      view('#sec-table').html = '<div class="empty">No train has used the tunnel yet.</div>';
+      return;
+    }
+    const x = r.result;
+    const waits = x.passages.map((p) => p.enteredAtMs - p.requestedAtMs);
+    view('#sec-verdict').html = `<div class="metrics"><div class="metric"><div class="label">Messages</div><div class="value">${x.messages.length}</div><div class="hint">2(N−1) = ${2 * (x.participants.length - 1)} per request</div></div><div class="metric"><div class="label">Most inside</div><div class="value ${x.maxInside <= 1 ? 'ok' : 'bad'}">${x.maxInside}</div><div class="hint">at any moment</div></div><div class="metric"><div class="label">Longest wait</div><div class="value">${Math.max(...waits)} ms</div><div class="hint">request → enter</div></div></div>
+      <div class="mt-s">${x.mutualExclusion ? chip('✓ never two trains in the tunnel', 'c-green') : chip('✗ mutual exclusion violated', 'c-red')}</div>`;
+    view('#sec-table').html = `<table><thead><tr><th>#</th><th>Train</th><th>From</th><th>Request λ</th><th>Waited</th><th>In tunnel</th><th>Reply deferred by</th></tr></thead><tbody>${x.passages.map((p, i) => `<tr><td>${i + 1}</td><td class="mono"><b>${esc(p.train)}</b></td><td style="color:${ST_COLOR[p.station]};font-weight:700">${esc(place(p.station))}</td><td class="mono">λ${p.requestTimestamp}</td><td class="mono">${p.enteredAtMs - p.requestedAtMs} ms</td><td class="mono">${p.enteredAtMs} → ${p.leftAtMs} ms</td><td>${p.deferredBy.length ? p.deferredBy.map((s) => `<span style="color:${ST_COLOR[s]}">${esc(place(s))}</span>`).join(', ') : '<span class="dim">nobody: went first</span>'}</td></tr>`).join('')}</tbody></table>`;
+    if (local.secPlayedFor !== x) { local.secPlayedFor = x; secPlay(true); }
+  },
+});
+
+/** Everything visible at time t (ms since the requests were issued). */
+function secFrame(x, t) {
+  let g = '';
+  // tunnel
+  const occupant = x ? x.passages.find((p) => p.enteredAtMs <= t && t < p.leftAtMs) : null;
+  g += `<path d="M290,212 L290,160 Q400,108 510,160 L510,212" fill="rgba(148,163,184,0.06)" stroke="${occupant ? '#34d399' : 'rgba(148,163,184,0.35)'}" stroke-width="2.5"/>
+    <line x1="230" y1="206" x2="570" y2="206" stroke="rgba(148,163,184,0.5)" stroke-width="3"/>
+    <line x1="230" y1="214" x2="570" y2="214" stroke="rgba(148,163,184,0.5)" stroke-width="3"/>
+    <text x="400" y="240" text-anchor="middle" font-size="12" fill="#7487a5" font-weight="700" letter-spacing="2">HILLCREST TUNNEL · SINGLE TRACK</text>`;
+  if (occupant) {
+    const p = (t - occupant.enteredAtMs) / Math.max(1, occupant.leftAtMs - occupant.enteredAtMs);
+    const tx = 250 + p * 300;
+    g += `<rect x="${tx - 34}" y="${192}" width="68" height="16" rx="5" fill="${ST_COLOR[occupant.station]}" filter="url(#secGlow)"/><text x="${tx}" y="${186}" text-anchor="middle" font-size="11" font-weight="700" fill="#e6edf8">${esc(occupant.train)}</text>`;
+  } else {
+    g += `<text x="400" y="190" text-anchor="middle" font-size="12" fill="#34d399">${x && t > 0 && t < x.elapsedMs ? '' : 'free'}</text>`;
+  }
+  // stations
+  for (const st of STATIONS) {
+    const [sx, sy] = SEC_POS[st];
+    const p = x ? x.passages.find((q) => q.station === st) : null;
+    let label = 'idle'; let color = '#7487a5';
+    if (p && p.requestedAtMs <= t && t < p.enteredAtMs) { label = `WANTED · λ${p.requestTimestamp}`; color = '#fbbf24'; }
+    else if (p && p.enteredAtMs <= t && t < p.leftAtMs) { label = 'IN TUNNEL'; color = '#34d399'; }
+    else if (p && t >= p.leftAtMs) { label = 'done'; color = '#22d3ee'; }
+    const part = !x || x.participants.includes(st);
+    // replies this station is holding back at time t
+    const held = x ? x.messages.filter((m) => m.type === 'REQUEST' && m.to === st && m.deliveredAtMs <= t && (() => {
+      const reply = x.messages.find((r) => r.type === 'REPLY' && r.from === st && r.to === m.from);
+      return reply && reply.sentAtMs - m.deliveredAtMs > 25 && t < reply.sentAtMs;
+    })()).map((m) => m.from) : [];
+    g += `<g opacity="${part ? 1 : 0.3}"><circle cx="${sx}" cy="${sy}" r="30" fill="#0a1222" stroke="${ST_COLOR[st]}" stroke-width="3"/>
+      <text x="${sx}" y="${sy + 5}" text-anchor="middle" font-size="13" font-weight="800" fill="${ST_COLOR[st]}">${code(st)}</text>
+      <text x="${sx}" y="${sy - 40}" text-anchor="middle" font-size="12.5" font-weight="700" fill="#e6edf8">${esc(place(st))}</text>
+      <text x="${sx}" y="${sy + 50}" text-anchor="middle" font-size="11.5" font-weight="700" fill="${color}">${label}</text>
+      ${held.length ? `<text x="${sx}" y="${sy + 66}" text-anchor="middle" font-size="11" fill="#fbbf24">holding reply for ${held.map((h) => code(h)).join(', ')}</text>` : ''}
+      ${part ? '' : `<text x="${sx}" y="${sy + 66}" text-anchor="middle" font-size="11" fill="#f87171">offline</text>`}</g>`;
+  }
+  // messages in flight
+  if (x) {
+    for (const m of x.messages) {
+      if (t < m.sentAtMs || t >= m.deliveredAtMs) continue;
+      const [ax, ay] = SEC_POS[m.from]; const [bx, by] = SEC_POS[m.to];
+      const k = (t - m.sentAtMs) / Math.max(1, m.deliveredAtMs - m.sentAtMs);
+      const c = m.type === 'REQUEST' ? '#22d3ee' : '#34d399';
+      g += `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${c}" stroke-opacity=".18" stroke-width="1.5"/>
+        <circle cx="${ax + (bx - ax) * k}" cy="${ay + (by - ay) * k}" r="6" fill="${c}" filter="url(#secGlow)"/>
+        <text x="${ax + (bx - ax) * k}" y="${ay + (by - ay) * k - 10}" text-anchor="middle" font-size="10" font-family="Consolas" fill="${c}">${m.type === 'REQUEST' ? 'REQ' : 'OK'} λ${m.lamport}</text>`;
+    }
+  }
+  return `<defs><filter id="secGlow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${g}`;
+}
+
+function secPlay(animate) {
+  cancelAnimationFrame(local.secRaf);
+  const r = App.state && App.state.results.section;
+  const x = r ? r.result : null;
+  const svg = $('#sec-svg');
+  if (!svg) return;
+  if (!x || !animate) {
+    const t = x ? x.elapsedMs + 1 : 0;
+    svg.innerHTML = secFrame(x, t);
+    $('#sec-bar').style.width = x ? '100%' : '0%';
+    $('#sec-clock').textContent = x ? `t = ${x.elapsedMs} ms` : '';
+    return;
+  }
+  const start = performance.now();
+  const end = x.elapsedMs + 150;
+  const tick = (now) => {
+    if (!$('#sec-svg')) return;
+    const t = Math.min(end, (now - start) * SEC_SPEED);
+    svg.innerHTML = secFrame(x, t);
+    $('#sec-bar').style.width = (t / end * 100) + '%';
+    $('#sec-clock').textContent = `t = ${Math.round(t)} ms · replay ${SEC_SPEED}×`;
+    if (t < end) local.secRaf = requestAnimationFrame(tick);
+  };
+  local.secRaf = requestAnimationFrame(tick);
+}
+
+Object.assign(ACTIONS, {
+  secRequest: async (b) => {
+    const picked = $$('.sec-pick input').filter((i) => i.checked && !i.disabled).map((i) => ({ station: i.value }));
+    if (!picked.length) { toast('Pick at least one station', 'bad'); return; }
+    await act(b, '/section/request', { requests: picked }, (d) => `🚆 ${d.result.passages.length} train(s) passed one at a time · ${d.result.messages.length} messages`);
+  },
+  secReplay: () => secPlay(true),
 });
 
 /* =========================================================

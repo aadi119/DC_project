@@ -202,6 +202,7 @@ public final class RailwayWebServer {
             case "/api/replication/verify" -> system.verifyConsistency();
             case "/api/dispatch/demo" -> system.dispatchDemoBatch();
             case "/api/dispatch" -> system.dispatch(requests(body));
+            case "/api/section/request" -> system.sectionRequest(sectionRequests(body));
             case "/api/analytics" -> system.runAnalytics();
             case "/api/fault/request" -> system.clientRequest(str(body, "train"), str(body, "movement"),
                     str(body, "track"), body.has("crash") && body.get("crash").getAsBoolean());
@@ -236,6 +237,16 @@ public final class RailwayWebServer {
         for (JsonElement element : array) {
             JsonObject r = element.getAsJsonObject();
             list.add(new String[] {str(r, "train"), str(r, "movement"), str(r, "track")});
+        }
+        return list;
+    }
+
+    private static List<String[]> sectionRequests(JsonObject body) {
+        List<String[]> list = new ArrayList<>();
+        JsonArray array = body.has("requests") ? body.getAsJsonArray("requests") : new JsonArray();
+        for (JsonElement element : array) {
+            JsonObject r = element.getAsJsonObject();
+            list.add(new String[] {str(r, "station"), str(r, "train")});
         }
         return list;
     }

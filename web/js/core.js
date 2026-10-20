@@ -118,6 +118,10 @@ function describe(e) {
     return { ic: '♛', c: 'c-gold', tx: `${who}: ${esc(m)}` };
   }
   if (t.startsWith('RPC station.getLamportClock')) return null; // load-test bursts stay out of the feed
+  if (t.startsWith('MUTEX ENTER')) return { ic: '🚆', c: 'c-green', tx: `${esc(t.split(' : ')[1].split(' ')[0])} entered Hillcrest Tunnel (granted by every station)` };
+  if (t.startsWith('MUTEX REQUEST ')) return t.includes('→ all') ? { ic: '✋', c: 'c-amber', tx: `${who} asked every station for Hillcrest Tunnel` } : null;
+  if (t.startsWith('MUTEX DEFER')) return { ic: '⏸', c: 'c-amber', tx: `${who} deferred its reply to ${esc(place(t.match(/STATION-\d+/)[0]))}` };
+  if (t.startsWith('MUTEX')) return null;
   if (t.startsWith('RMI ')) return { ic: '⇄', c: 'c-cyan', tx: `${who} answered a remote call ${esc(t.split(' ')[1])}` };
   if (t.startsWith('CLOCK SYNC')) return { ic: '⏱', c: 'c-cyan', tx: `${who} synchronised its clock with GPS (${esc(t.split('→ ')[1] || '')})` };
   if (t.startsWith('BERKELEY')) return { ic: '⏱', c: 'c-gold', tx: `${who} ran a Berkeley clock round` };

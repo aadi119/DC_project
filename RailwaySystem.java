@@ -424,6 +424,55 @@ public final class RailwaySystem {
     }
 
     // =========================================================
+    // DISTRIBUTED MUTUAL EXCLUSION (Ricart–Agrawala)
+    // =========================================================
+
+    public static final String SECTION = "HILLCREST-TUNNEL";
+
+    /**
+     * Several stations ask for the single-line section at the same moment.
+     * Each entry of requests is {station, train}; train may be empty.
+     */
+    public Map<String, Object> sectionRequest(List<String[]> requests) {
+        return action(() -> {
+            if (requests.isEmpty() || requests.size() > 4) {
+                throw new ActionException("Choose 1 to 4 stations");
+            }
+            List<String> seen = new ArrayList<>();
+            List<String[]> normalised = new ArrayList<>();
+            for (String[] r : requests) {
+                RailwayStation s = activeStation(r[0]);
+                if (seen.contains(s.getStationName())) {
+                    throw new ActionException(s.getStationName() + " can only send one request at a time");
+                }
+                seen.add(s.getStationName());
+                normalised.add(new String[] {s.getStationName(),
+                        r[1] == null || r[1].isBlank() ? "TRAIN-" + nextTrainNumber++ : normaliseTrain(r[1])});
+            }
+            List<RailwayStation> participants = stations.stream().filter(RailwayStation::isActive).toList();
+
+            Terminal.section("SINGLE-LINE SECTION " + SECTION + ": " + normalised.size()
+                    + " request(s), " + participants.size() + " stations vote");
+            try {
+                RicartAgrawala.Result result = new RicartAgrawala(SECTION, participants, 600)
+                        .contend(normalised);
+                Terminal.line(result.mutualExclusion()
+                        ? "✓ Mutual exclusion held: one train at a time (" + result.messages().size() + " messages)"
+                        : "✗ Mutual exclusion violated");
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("result", result);
+                remember("section", out);
+                return out;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ActionException("Interrupted");
+            } catch (IllegalStateException e) {
+                throw new ActionException("Section request failed: " + e.getMessage());
+            }
+        });
+    }
+
+    // =========================================================
     // EXPERIMENT 3 - PHYSICAL CLOCK SYNCHRONIZATION
     // =========================================================
 

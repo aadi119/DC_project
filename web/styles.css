@@ -451,9 +451,11 @@ body.logs-open #toasts { bottom: 336px; }
 
 /* ---------------- responsive ---------------- */
 
-@media (max-width: 1500px) {
+@media (max-width: 1560px) {
   .clock { display: none; }
-  .tab span { display: inline; }
+  .tab { padding: 7px 8px; }
+  .tab svg { display: none; }
+  .tabs { gap: 2px; }
 }
 @media (max-width: 1280px) {
   .tab svg { display: none; }
@@ -491,3 +493,13 @@ body.logs-open #toasts { bottom: 336px; }
 .clk-ticks { position: absolute; left: 4%; right: 4%; bottom: 0; display: flex; justify-content: space-between; font-size: 10.5px; color: var(--dim); }
 .clk-steps { display: flex; gap: 10px 16px; flex-wrap: wrap; align-items: center; font-size: 13px; }
 @media (max-width: 900px) { .clk-faces { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- section control (mutual exclusion) ---------- */
+.sec-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sec-pick { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; font-weight: 600; border-left: 3px solid var(--c); }
+.sec-pick input { accent-color: var(--c); width: 16px; height: 16px; }
+.sec-pick.off { opacity: .45; cursor: not-allowed; }
+.sec-stage { background: radial-gradient(500px 220px at 50% 55%, rgba(52, 211, 153, 0.06), transparent 70%); border-radius: 12px; }
+.sec-stage svg { width: 100%; height: auto; max-height: 390px; display: block; margin: 0 auto; }
+.sec-progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; margin-top: 8px; }
+.sec-progress div { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), var(--green)); }

@@ -43,7 +43,8 @@ part of normal operation; every button calls the real Java code:
 | Network | Animated map: trains, signals, heartbeats, replication packets; station inspector; Autopilot | replication, heartbeats, Lamport clocks |
 | Dispatch | Round-robin routing wheel, controller worker threads, signal box | load balancing, multithreading |
 | Resilience | Incidents, heartbeat monitor, automatic failover, mirror integrity, request journal, elections | fault tolerance, consistency, Bully/Ring |
-| Timeline | Causal timeline drawn from real events by logical time; live station clocks with Cristian and Berkeley synchronization | Lamport clocks, physical clock sync |
+| Tunnel | Stations request a single-track tunnel at the same time; animated replay of REQUEST/REPLY messages, deferred replies, order of passage | distributed mutual exclusion (Ricart–Agrawala), Lamport timestamps |
+| Timeline | Causal timeline drawn from real events by logical time; click an event to see what happened before, after or concurrently (vector clocks); live station clocks with Cristian and Berkeley synchronization | Lamport clocks, physical clock sync |
 | Insights | Traffic analytics pipeline and track heat map | MapReduce on Apache Spark |
 | Fleet Sync | Live state pushed to a compute cluster, animated | MPI Broadcast / Scatter / Gather |
 | Route Planner | Two-leg routes on a junction graph, cluster scaling chart | parallel matrix multiplication (MPI) |
@@ -71,6 +72,12 @@ To run them in two terminals (or on two machines) instead:
 ```bash
 java -cp target/classes StationRmiServer 1099
 java -cp target/classes StationRmiClient 127.0.0.1 1099
+```
+
+Distributed mutual exclusion (Ricart–Agrawala, beyond the 10 experiments):
+
+```bash
+mvn -q compile exec:exec -Dmain.class=RicartAgrawala
 ```
 
 Experiments 4–8 (one connected run):
